@@ -5,15 +5,37 @@ import { Insights } from "@/components/Insights";
 import { Sessions } from "@/components/Sessions";
 import { Search } from "@/components/Search";
 import { Chat } from "@/components/Chat";
+import { Health } from "@/components/Health";
+import { Usage } from "@/components/Usage";
+import { Mcp } from "@/components/Mcp";
+import { Goals } from "@/components/Goals";
+import { Tasks } from "@/components/Tasks";
+import { Audit } from "@/components/Audit";
 import { api } from "@/lib/api";
 
-type Tab = "insights" | "sessions" | "search" | "chat";
+type Tab =
+  | "insights"
+  | "sessions"
+  | "search"
+  | "chat"
+  | "health"
+  | "usage"
+  | "mcp"
+  | "goals"
+  | "tasks"
+  | "audit";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "insights", label: "Insights" },
   { id: "sessions", label: "Sessions" },
   { id: "search", label: "Search" },
   { id: "chat", label: "Chat" },
+  { id: "health", label: "Health" },
+  { id: "usage", label: "Usage" },
+  { id: "mcp", label: "MCP" },
+  { id: "goals", label: "Goals" },
+  { id: "tasks", label: "Tasks" },
+  { id: "audit", label: "Audit" },
 ];
 
 export default function Home() {
@@ -42,12 +64,12 @@ export default function Home() {
       </header>
 
       {/* Tabs */}
-      <nav className="border-b border-border px-6 flex gap-0">
+      <nav className="border-b border-border px-6 flex gap-0 overflow-x-auto">
         {TABS.map((tab) => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={`px-5 py-3 text-sm font-medium border-b-2 transition-colors ${
+            className={`px-5 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
               activeTab === tab.id
                 ? "text-accent border-accent"
                 : "text-text-dim border-transparent hover:text-text"
@@ -64,6 +86,12 @@ export default function Home() {
         {activeTab === "sessions" && <Sessions />}
         {activeTab === "search" && <Search />}
         {activeTab === "chat" && <Chat />}
+        {activeTab === "health" && <Health />}
+        {activeTab === "usage" && <Usage />}
+        {activeTab === "mcp" && <Mcp />}
+        {activeTab === "goals" && <Goals />}
+        {activeTab === "tasks" && <Tasks />}
+        {activeTab === "audit" && <Audit />}
       </main>
     </div>
   );

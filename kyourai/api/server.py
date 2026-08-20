@@ -377,6 +377,292 @@ def create_app(
             db.close()
         return report
 
+    # -- Usage / pricing --------------------------------------------------
+
+    @app.get("/v1/usage")
+    async def usage(request: Request, days: int = 30, by_model: bool = False):
+        """Get token usage and cost estimates."""
+        _check_auth(request)
+        from kyourai.usage import UsageTracker
+        tracker = UsageTracker()
+        if by_model:
+            by_model_data = tracker.get_by_model(days=days)
+            return {
+                "by_model": {
+                    model: {
+                        "prompt_tokens": total.total_prompt_tokens,
+                        "completion_tokens": total.total_completion_tokens,
+                        "total_tokens": total.total_tokens,
+                        "cost_usd": total.total_cost_usd,
+                        "calls": total.entry_count,
+                    }
+                    for model, total in by_model_data.items()
+                }
+            }
+        total = tracker.get_totals(days=days)
+        return {
+            "prompt_tokens": total.total_prompt_tokens,
+            "completion_tokens": total.total_completion_tokens,
+            "total_tokens": total.total_tokens,
+            "cost_usd": total.total_cost_usd,
+            "calls": total.entry_count,
+            "by_model": {
+                model: {
+                    "prompt_tokens": stats["prompt_tokens"],
+                    "completion_tokens": stats["completion_tokens"],
+                    "cost_usd": round(stats["cost_usd"], 4),
+                    "calls": stats["calls"],
+                }
+                for model, stats in total.by_model.items()
+            },
+        }
+
+    # -- MCP catalog ------------------------------------------------------
+
+    @app.get("/v1/mcp/servers")
+    async def mcp_list_servers(request: Request):
+        """List registered MCP servers."""
+        _check_auth(request)
+        from kyourai.mcp.catalog import MCPCatalog
+        catalog = MCPCatalog()
+        servers = catalog.list_servers()
+        return {
+            "servers": [
+                {
+                    "name": s.name,
+                    "transport": s.transport,
+                    "enabled": s.enabled,
+                    "connected": s.connected,
+                    "description": s.description,
+                    "auto_connect": s.auto_connect,
+                }
+                for s in servers
+            ]
+        }
+
+    @app.get("/v1/mcp/bundled")
+    async def mcp_list_bundled(request: Request):
+        """List bundled MCP server templates."""
+        _check_auth(request)
+        from kyourai.mcp.catalog import MCPCatalog
+        catalog = MCPCatalog()
+        bundled = catalog.list_bundled()
+        return {"bundled": bundled}
+
+    @app.post("/v1/mcp/register-bundled/{name}")
+    async def mcp_register_bundled(request: Request, name: str):
+        """Register a bundled MCP server."""
+        _check_auth(request)
+        from kyourai.mcp.catalog import MCPCatalog
+        catalog = MCPCatalog()
+        cfg = catalog.register_bundled(name)
+        if cfg:
+            return {"success": True, "name": name, "command": cfg.command}
+        raise HTTPException(status_code=404, detail=f"Unknown bundled server: {name}")
+
+    @app.delete("/v1/mcp/servers/{name}")
+    async def mcp_unregister(request: Request, name: str):
+        """Unregister an MCP server."""
+        _check_auth(request)
+        from kyourai.mcp.catalog import MCPCatalog
+        catalog = MCPCatalog()
+        if catalog.unregister(name):
+            return {"success": True, "name": name}
+        raise HTTPException(status_code=404, detail=f"Server not found: {name}")
+
+    @app.get("/v1/mcp/status")
+    async def mcp_status(request: Request):
+        """Get status of all MCP servers."""
+        _check_auth(request)
+        from kyourai.mcp.catalog import MCPCatalog
+        catalog = MCPCatalog()
+        return {"statuses": catalog.status()}
+
+    # -- Goals ------------------------------------------------------------
+
+    @app.get("/v1/goals")
+    async def goals_list(request: Request, session_id: str = ""):
+        """List goals."""
+        _check_auth(request)
+        from kyourai.tools.goals import GoalTracker
+        tracker = GoalTracker(session_id=session_id)
+        return {
+            "active": [g.to_dict() for g in tracker.list_active()],
+            "completed": [g.to_dict() for g in tracker.list_completed()],
+            "summary": tracker.get_summary(),
+        }
+
+    @app.post("/v1/goals")
+    async def goals_create(request: Request):
+        """Create a goal."""
+        _check_auth(request)
+        from kyourai.tools.goals import GoalTracker
+        body = await request.json()
+        tracker = GoalTracker(session_id=body.get("session_id", ""))
+        goal = tracker.create_goal(
+            title=body["title"],
+            description=body.get("description", ""),
+            priority=body.get("priority", "medium"),
+            tags=body.get("tags"),
+        )
+        return goal.to_dict()
+
+    @app.post("/v1/goals/{goal_id}/progress")
+    async def goals_update_progress(request: Request, goal_id: str, progress: int):
+        """Update goal progress."""
+        _check_auth(request)
+        from kyourai.tools.goals import GoalTracker
+        tracker = GoalTracker()
+        goal = tracker.update_progress(goal_id, progress)
+        if goal:
+            return goal.to_dict()
+        raise HTTPException(status_code=404, detail="Goal not found")
+
+    @app.post("/v1/goals/{goal_id}/complete")
+    async def goals_complete(request: Request, goal_id: str):
+        """Complete a goal."""
+        _check_auth(request)
+        from kyourai.tools.goals import GoalTracker
+        body = await request.json()
+        tracker = GoalTracker()
+        goal = tracker.complete_goal(goal_id, outcome=body.get("outcome", ""))
+        if goal:
+            return goal.to_dict()
+        raise HTTPException(status_code=404, detail="Goal not found")
+
+    @app.delete("/v1/goals/{goal_id}")
+    async def goals_abandon(request: Request, goal_id: str):
+        """Abandon a goal."""
+        _check_auth(request)
+        from kyourai.tools.goals import GoalTracker
+        tracker = GoalTracker()
+        goal = tracker.abandon_goal(goal_id)
+        if goal:
+            return goal.to_dict()
+        raise HTTPException(status_code=404, detail="Goal not found")
+
+    # -- Tasks / Flows ----------------------------------------------------
+
+    @app.get("/v1/tasks/flows")
+    async def tasks_list_flows(request: Request, session_id: str = "", status: str = ""):
+        """List task flows."""
+        _check_auth(request)
+        from kyourai.tasks.flows import TaskRegistry, FlowStatus
+        registry = TaskRegistry()
+        flow_status = FlowStatus(status) if status else None
+        flows = registry.list_flows(session_id=session_id or None, status=flow_status)
+        return {
+            "flows": [f.to_dict() for f in flows],
+            "active_count": len([f for f in flows if f.is_active]),
+        }
+
+    @app.get("/v1/tasks/flows/{flow_id}")
+    async def tasks_get_flow(request: Request, flow_id: str):
+        """Get a task flow with its tasks."""
+        _check_auth(request)
+        from kyourai.tasks.flows import TaskRegistry
+        registry = TaskRegistry()
+        flow = registry.get_flow(flow_id)
+        if not flow:
+            raise HTTPException(status_code=404, detail="Flow not found")
+        tasks = registry.list_tasks(flow_id=flow_id)
+        return {
+            "flow": flow.to_dict(),
+            "tasks": [t.to_dict() for t in tasks],
+        }
+
+    @app.post("/v1/tasks/flows")
+    async def tasks_create_flow(request: Request):
+        """Create a task flow."""
+        _check_auth(request)
+        from kyourai.tasks.flows import TaskRegistry
+        body = await request.json()
+        registry = TaskRegistry()
+        flow = registry.create_flow(
+            title=body["title"],
+            steps=body.get("steps", []),
+            session_id=body.get("session_id", ""),
+        )
+        return flow.to_dict()
+
+    @app.post("/v1/tasks/flows/{flow_id}/cancel")
+    async def tasks_cancel_flow(request: Request, flow_id: str):
+        """Cancel a task flow."""
+        _check_auth(request)
+        from kyourai.tasks.flows import TaskRegistry
+        registry = TaskRegistry()
+        flow = registry.cancel_flow(flow_id)
+        if flow:
+            return flow.to_dict()
+        raise HTTPException(status_code=404, detail="Flow not found or not active")
+
+    @app.get("/v1/tasks/active")
+    async def tasks_active(request: Request, session_id: str = ""):
+        """List active tasks."""
+        _check_auth(request)
+        from kyourai.tasks.flows import TaskRegistry
+        registry = TaskRegistry()
+        tasks = registry.list_active_tasks(session_id=session_id or None)
+        flows = registry.list_active_flows(session_id=session_id or None)
+        return {
+            "tasks": [t.to_dict() for t in tasks],
+            "flows": [f.to_dict() for f in flows],
+        }
+
+    # -- Audit ------------------------------------------------------------
+
+    @app.get("/v1/audit/events")
+    async def audit_events(
+        request: Request,
+        event_type: str = "",
+        session_id: str = "",
+        severity: str = "",
+        since: float = 0,
+        limit: int = 100,
+    ):
+        """Query audit events."""
+        _check_auth(request)
+        from kyourai.audit import AuditWriter
+        writer = AuditWriter()
+        events = writer.query(
+            event_type=event_type or None,
+            session_id=session_id or None,
+            severity=severity or None,
+            since=since or None,
+            limit=limit,
+        )
+        return {
+            "events": [e.to_dict() for e in events],
+            "count": len(events),
+        }
+
+    @app.get("/v1/audit/stats")
+    async def audit_stats(request: Request, days: int = 7):
+        """Get audit statistics."""
+        _check_auth(request)
+        from kyourai.audit import AuditWriter
+        writer = AuditWriter()
+        return writer.get_stats(days=days)
+
+    # -- Providers --------------------------------------------------------
+
+    @app.get("/v1/providers")
+    async def providers_list(request: Request):
+        """List available LLM providers."""
+        _check_auth(request)
+        from kyourai.providers import list_providers
+        return {"providers": list_providers()}
+
+    # -- Coding context ---------------------------------------------------
+
+    @app.get("/v1/context")
+    async def coding_context(request: Request):
+        """Get detected coding context for the server's working directory."""
+        _check_auth(request)
+        from kyourai.context.coding import detect_coding_context
+        ctx = detect_coding_context()
+        return ctx.to_dict()
+
     return app
 
 
