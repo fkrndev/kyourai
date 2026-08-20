@@ -25,6 +25,7 @@ python tests/smoke_manager.py       # MemoryManager orchestrator
 python tests/smoke_agent.py         # Pydantic AI agent core
 python tests/smoke_state.py         # SessionDB + InsightsEngine (33 checks)
 python tests/smoke_tools.py         # Core tools + context compression (42 checks)
+python tests/smoke_tier2.py         # Error handling + retry + rate limit + subagent (38 checks)
 ```
 
 All tests use temp directories and clean up after themselves.
@@ -52,8 +53,15 @@ All tests use temp directories and clean up after themselves.
 - `kyourai/context/compressor.py` — Context compression (token estimation, summary generation)
 - `kyourai/state/db.py` — SessionDB (SQLite + FTS5 session/message store)
 - `kyourai/state/insights.py` — InsightsEngine (usage analytics over sessions)
-- `kyourai/api/server.py` — OpenAI-compatible API server (/v1/chat/completions, /v1/sessions, /v1/insights)
-- `kyourai/agent.py` — KyouraiAgent (Pydantic AI + memory + skills + cron + session + tools + compression)
+- `kyourai/api/server.py` — OpenAI-compatible API server + web dashboard (/v1/chat/completions, /v1/sessions, /v1/insights, /dashboard)
+- `kyourai/api/dashboard.html` — Single-page web dashboard (insights, sessions, search, chat)
+- `kyourai/agent/_main.py` — KyouraiAgent (Pydantic AI + memory + skills + cron + session + tools + compression + retry + rate limit)
+- `kyourai/agent/error_classifier.py` — Error classification (retryable vs fatal)
+- `kyourai/agent/retry_utils.py` — Retry with exponential backoff + jitter
+- `kyourai/agent/rate_limit_tracker.py` — Per-provider sliding window rate limiter
+- `kyourai/agent/empty_response_guard.py` — Handle empty/whitespace LLM responses
+- `kyourai/agent/title_generator.py` — Auto-title sessions from first exchange
+- `kyourai/agent/subagent.py` — Subagent delegation (parallel task execution)
 - `kyourai/cli.py` — CLI entry point (Click + Rich)
 - `kyourai/config.py` — Config loader (config.yaml)
 - `kyourai/constants.py` — Path resolution ($KYOURAI_HOME)
@@ -98,3 +106,18 @@ All tests use temp directories and clean up after themselves.
    to the user prompt (that would mutate the prefix and invalidate cache).
    Memory context lives in the frozen system prompt (builtin snapshot) or is
    retrieved via tools (fact_store) during the conversation.
+
+10. **Error handling**: Errors are classified as retryable (timeout, 429, 5xx),
+    rate-limited (429 with retry-after), or fatal (401, 403, content policy).
+    Retryable errors trigger exponential backoff with jitter. Rate limits are
+    tracked per-provider via sliding window. Empty LLM responses are detected
+    and retried up to 2 times before returning a fallback message.
+
+11. **Subagent delegation**: The main agent can delegate subtasks to independent
+    subagent instances, each with its own session. Supports batch delegation
+    for parallel task execution. Results collected as DelegationResult.
+
+12. **Web dashboard**: Single-page HTML dashboard served at / and /dashboard.
+    Tabs: Insights (analytics cards + activity chart), Sessions (list + detail
+    view), Search (FTS5 across session messages), Chat (live chat with agent).
+    Zero dependencies — pure HTML/CSS/JS, consumes the existing API endpoints.

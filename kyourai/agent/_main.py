@@ -27,6 +27,12 @@ from kyourai.memory.holographic.provider import HolographicMemoryProvider
 from kyourai.memory.holographic.store import MemoryStore
 from kyourai.memory import curator as curator_module
 from kyourai.state import SessionDB
+from kyourai.agent.error_classifier import classify_error, ErrorCategory
+from kyourai.agent.retry_utils import retry_with_backoff
+from kyourai.agent.rate_limit_tracker import RateLimitTracker
+from kyourai.agent.empty_response_guard import guard_response, is_empty_response
+from kyourai.agent.title_generator import generate_title, generate_title_sync
+from kyourai.agent.subagent import SubagentDelegator
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +155,15 @@ class KyouraiAgent:
         )
         from kyourai.context import estimate_tokens
         self._system_prompt_tokens: int = estimate_tokens(self._system_prompt)
+
+        # Rate limit tracker (per-provider sliding window)
+        self._rate_limiter = RateLimitTracker()
+
+        # Subagent delegator (lazy init — only when first needed)
+        self._delegator: SubagentDelegator | None = None
+
+        # Title generation flag (only auto-title on first turn)
+        self._titled: bool = False
 
         # Curator background runner
         self._curator_runner = None
@@ -386,14 +401,10 @@ class KyouraiAgent:
     async def run(self, user_prompt: str, *, message_history: list | None = None) -> str:
         """Run the agent on a user prompt. Returns the agent's output string.
 
-        Prompt caching: the system prompt is byte-stable for the conversation
-        lifetime (built once in __init__). Memory prefetch is NOT appended to
-        the user prompt — that would mutate the prefix and invalidate cache.
-        Instead, memory context is in the frozen system prompt (builtin
-        snapshot) or retrieved via tools (fact_store).
-
-        Context compression: if message_history is provided and exceeds the
-        token threshold, older messages are summarized before the API call.
+        Includes: prompt caching (byte-stable system prompt), context
+        compression (if message_history exceeds threshold), rate limiting,
+        retry with backoff (on transient errors), empty response guard,
+        and auto title generation (on first turn).
         """
         # Track user activity for curator idle detection
         self._last_activity_ts = time.time()
@@ -420,23 +431,76 @@ class KyouraiAgent:
         if self._curator_runner:
             self._curator_runner.maybe_run()
 
-        result = await self._agent.run(user_prompt, deps=self, message_history=message_history)
+        # Rate limit check (non-blocking — just records)
+        provider = str(self.model).split(":")[0] if isinstance(self.model, str) else "default"
+        await self._rate_limiter.wait_if_needed_async(provider)
+
+        # Run with retry + empty response guard
+        output = await self._run_with_retry(user_prompt, message_history)
+
+        # Record successful request for rate limiting
+        self._rate_limiter.record(provider)
 
         # Persist assistant response to session DB
         if self.session_db:
             try:
                 self.session_db.add_message(
-                    self.session_id, role="assistant", content=result.output
+                    self.session_id, role="assistant", content=output
                 )
             except Exception:
                 pass
 
-        return result.output
+        # Auto-generate title on first turn
+        if not self._titled and self.session_db:
+            self._titled = True
+            try:
+                title = generate_title_sync(user_prompt, output)
+                self.session_db.update_session(self.session_id, title=title)
+            except Exception:
+                pass
+
+        return output
+
+    async def _run_with_retry(
+        self,
+        user_prompt: str,
+        message_history: list | None = None,
+    ) -> str:
+        """Run the agent with retry on transient errors and empty response guard."""
+        max_empty_retries = 2
+
+        async def _call():
+            result = await self._agent.run(
+                user_prompt, deps=self, message_history=message_history
+            )
+            return result.output
+
+        for empty_attempt in range(max_empty_retries + 1):
+            try:
+                output = await retry_with_backoff(_call, max_retries=3)
+            except Exception as e:
+                classification = classify_error(e)
+                if classification.category == ErrorCategory.FATAL:
+                    raise
+                # For retryable errors that exhausted retries, return error message
+                logger.warning("Agent run failed after retries: %s", e)
+                return f"Error: {e}"
+
+            # Empty response guard
+            guarded, should_retry = guard_response(output, retry_count=empty_attempt)
+            if not should_retry:
+                return guarded
+            # Retry with empty response guard
+            logger.warning("Empty response, retrying (attempt %d)", empty_attempt + 1)
+
+        return guarded  # type: ignore[possibly-undefined]
 
     async def run_stream(self, user_prompt: str, *, message_history: list | None = None):
         """Run the agent with streaming output.
 
-        Same caching + compression guarantees as run().
+        Same caching + compression + rate limiting as run().
+        Note: retry is not applied to streaming (partial output can't be
+        retried cleanly). Empty response guard is applied after collection.
         """
         # Track user activity for curator idle detection
         self._last_activity_ts = time.time()
@@ -461,18 +525,34 @@ class KyouraiAgent:
         if self._curator_runner:
             self._curator_runner.maybe_run()
 
+        # Rate limit check
+        provider = str(self.model).split(":")[0] if isinstance(self.model, str) else "default"
+        await self._rate_limiter.wait_if_needed_async(provider)
+
         collected = []
         async with self._agent.run_stream(user_prompt, deps=self, message_history=message_history) as result:
             async for chunk in result.stream_text(delta=True):
                 collected.append(chunk)
                 yield chunk
 
+        self._rate_limiter.record(provider)
+
         # Persist streamed assistant response to session DB
-        if self.session_db and collected:
+        full_output = "".join(collected)
+        if self.session_db and full_output:
             try:
                 self.session_db.add_message(
-                    self.session_id, role="assistant", content="".join(collected)
+                    self.session_id, role="assistant", content=full_output
                 )
+            except Exception:
+                pass
+
+        # Auto-generate title on first turn
+        if not self._titled and self.session_db and full_output:
+            self._titled = True
+            try:
+                title = generate_title_sync(user_prompt, full_output)
+                self.session_db.update_session(self.session_id, title=title)
             except Exception:
                 pass
 
@@ -496,6 +576,37 @@ class KyouraiAgent:
             return []
         return self.session_db.get_message_history(self.session_id, limit=limit)
 
+    async def delegate(self, task: str, **kwargs: Any) -> Any:
+        """Delegate a task to a subagent.
+
+        Creates a subagent with its own session but shared memory context.
+        Useful for parallel task execution or isolating complex subtasks.
+
+        Args:
+            task: Task description for the subagent
+            **kwargs: Passed to SubagentDelegator.delegate()
+
+        Returns:
+            DelegationResult with the subagent's output
+        """
+        if self._delegator is None:
+            self._delegator = SubagentDelegator(self)
+        return await self._delegator.delegate(task, **kwargs)
+
+    async def delegate_batch(self, tasks: list[str], **kwargs: Any) -> list[Any]:
+        """Delegate multiple tasks to subagents in parallel.
+
+        Args:
+            tasks: List of task descriptions
+            **kwargs: Passed to SubagentDelegator.delegate_batch()
+
+        Returns:
+            List of DelegationResults (in same order as tasks)
+        """
+        if self._delegator is None:
+            self._delegator = SubagentDelegator(self)
+        return await self._delegator.delegate_batch(tasks, **kwargs)
+
     def shutdown(self) -> None:
         """Shutdown all memory providers, curator, cron scheduler, and session DB."""
         if self._cron_scheduler:
@@ -509,6 +620,7 @@ class KyouraiAgent:
                 self.session_db.close()
             except Exception:
                 pass
+        self._rate_limiter.reset()
 
     @property
     def recall_indicator(self) -> str:

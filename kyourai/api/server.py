@@ -37,7 +37,7 @@ from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -194,6 +194,24 @@ def create_app(
     @app.get("/health")
     async def health():
         return {"status": "ok", "version": "0.1.0"}
+
+    @app.get("/")
+    async def dashboard():
+        """Serve the web dashboard (single-page HTML)."""
+        from pathlib import Path
+        dashboard_path = Path(__file__).parent / "dashboard.html"
+        if dashboard_path.exists():
+            return HTMLResponse(dashboard_path.read_text(encoding="utf-8"))
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+
+    @app.get("/dashboard")
+    async def dashboard_alias():
+        """Alias for the dashboard."""
+        from pathlib import Path
+        dashboard_path = Path(__file__).parent / "dashboard.html"
+        if dashboard_path.exists():
+            return HTMLResponse(dashboard_path.read_text(encoding="utf-8"))
+        raise HTTPException(status_code=404, detail="Dashboard not found")
 
     @app.get("/v1/models")
     async def list_models(request: Request):

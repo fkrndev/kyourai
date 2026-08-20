@@ -652,7 +652,8 @@ def serve(host: str, port: int, model: str | None, api_key: str | None) -> None:
         f"[bold cyan]Kyourai API Server[/bold cyan]\n"
         f"Host: {host}:{port}\n"
         f"Model: {model}\n"
-        f"Endpoints: /v1/chat/completions, /v1/models, /v1/sessions, /v1/insights, /health",
+        f"Dashboard: http://{host}:{port}/\n"
+        f"API: /v1/chat/completions, /v1/models, /v1/sessions, /v1/insights",
         border_style="cyan",
     ))
     run_server(host=host, port=port, model=model, api_key=api_key)
