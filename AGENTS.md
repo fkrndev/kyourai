@@ -23,6 +23,7 @@ python tests/smoke_team.py          # team-native layer + RBAC
 python tests/smoke_portable_context.py  # KPC export/import
 python tests/smoke_manager.py       # MemoryManager orchestrator
 python tests/smoke_agent.py         # Pydantic AI agent core
+python tests/smoke_state.py         # SessionDB + InsightsEngine (33 checks)
 ```
 
 All tests use temp directories and clean up after themselves.
@@ -43,11 +44,14 @@ All tests use temp directories and clean up after themselves.
 - `kyourai/skills/loader.py` — Skills system (SKILL.md loader, gating, allowlists)
 - `kyourai/skills/bundled/` — Bundled skills (memory-curator, portable-context)
 - `kyourai/cron/__init__.py` — Cron scheduler (persistent scheduled tasks)
-- `kyourai/api/server.py` — OpenAI-compatible API server (/v1/chat/completions)
-- `kyourai/agent.py` — KyouraiAgent (Pydantic AI + memory + skills + cron wiring)
+- `kyourai/state/db.py` — SessionDB (SQLite + FTS5 session/message store)
+- `kyourai/state/insights.py` — InsightsEngine (usage analytics over sessions)
+- `kyourai/api/server.py` — OpenAI-compatible API server (/v1/chat/completions, /v1/sessions, /v1/insights)
+- `kyourai/agent.py` — KyouraiAgent (Pydantic AI + memory + skills + cron + session persistence)
 - `kyourai/cli.py` — CLI entry point (Click + Rich)
 - `kyourai/config.py` — Config loader (config.yaml)
 - `kyourai/constants.py` — Path resolution ($KYOURAI_HOME)
+- `kyourai/logging.py` — Profile-aware logging (agent.log + errors.log)
 
 ## Key design decisions
 
@@ -67,3 +71,8 @@ All tests use temp directories and clean up after themselves.
 
 5. **Portable context**: KPC format is JSON with SHA-256 checksum. Supports
    skip_duplicates, overwrite, and append merge strategies.
+
+6. **Session persistence**: SessionDB (SQLite + FTS5) stores every conversation
+   turn. Enables session history browsing, full-text search across past
+   conversations, and usage analytics via InsightsEngine. Schema is versioned
+   for forward migration. Shared connection registry prevents write contention.

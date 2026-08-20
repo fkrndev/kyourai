@@ -41,8 +41,9 @@ console = Console()
 
 
 def _setup_logging(verbose: bool) -> None:
-    level = logging.DEBUG if verbose else logging.WARNING
-    logging.basicConfig(level=level, format="%(name)s: %(message)s")
+    from kyourai.logging import setup_logging
+
+    setup_logging(verbose=verbose)
 
 
 # ---------------------------------------------------------------------------
@@ -651,10 +652,197 @@ def serve(host: str, port: int, model: str | None, api_key: str | None) -> None:
         f"[bold cyan]Kyourai API Server[/bold cyan]\n"
         f"Host: {host}:{port}\n"
         f"Model: {model}\n"
-        f"Endpoints: /v1/chat/completions, /v1/models, /health",
+        f"Endpoints: /v1/chat/completions, /v1/models, /v1/sessions, /v1/insights, /health",
         border_style="cyan",
     ))
     run_server(host=host, port=port, model=model, api_key=api_key)
+
+
+# ---------------------------------------------------------------------------
+# sessions — session history management
+# ---------------------------------------------------------------------------
+
+@main.group()
+def sessions() -> None:
+    """Browse and search session history."""
+
+
+@sessions.command("list")
+@click.option("--limit", default=20, help="Max sessions to show")
+@click.option("--source", default=None, help="Filter by source (cli/api/team)")
+def sessions_list(limit: int, source: str | None) -> None:
+    """List recent sessions."""
+    from kyourai.state import SessionDB
+
+    db = SessionDB()
+    rows = db.list_sessions(limit=limit, source=source)
+    db.close()
+
+    if not rows:
+        console.print("[dim]No sessions found.[/dim]")
+        return
+
+    table = Table(title="Recent Sessions", show_lines=False)
+    table.add_column("ID", style="cyan", no_wrap=True, max_width=20)
+    table.add_column("Source", style="magenta")
+    table.add_column("Model", style="blue")
+    table.add_column("Msgs", justify="right")
+    table.add_column("Tools", justify="right")
+    table.add_column("Started", style="dim")
+
+    for r in rows:
+        started = r.get("started_at")
+        if started:
+            from datetime import datetime
+            ts = datetime.fromtimestamp(started).strftime("%Y-%m-%d %H:%M")
+        else:
+            ts = ""
+        table.add_row(
+            r.get("id", "")[:20],
+            r.get("source", ""),
+            (r.get("model") or "")[:25],
+            str(r.get("message_count", 0)),
+            str(r.get("tool_call_count", 0)),
+            ts,
+        )
+    console.print(table)
+
+
+@sessions.command("search")
+@click.argument("query")
+@click.option("--limit", default=20, help="Max results")
+def sessions_search(query: str, limit: int) -> None:
+    """Search session messages with full-text search."""
+    from kyourai.state import SessionDB
+
+    db = SessionDB()
+    results = db.search_messages(query, limit=limit)
+    db.close()
+
+    if not results:
+        console.print(f"[dim]No results for '{query}'.[/dim]")
+        return
+
+    console.print(f"[bold]Found {len(results)} result(s) for '{query}':[/bold]\n")
+    for r in results:
+        from datetime import datetime
+        ts = datetime.fromtimestamp(r.get("timestamp", 0)).strftime("%Y-%m-%d %H:%M")
+        role = r.get("role", "")
+        title = r.get("title") or r.get("session_id", "")[:20]
+        snippet = r.get("snippet", r.get("content", "")[:100])
+        console.print(
+            f"  [cyan]{ts}[/cyan] [{role}] [dim]{title}[/dim]\n"
+            f"  {snippet}\n"
+        )
+
+
+@sessions.command("show")
+@click.argument("session_id")
+@click.option("--limit", default=100, help="Max messages to show")
+def sessions_show(session_id: str, limit: int) -> None:
+    """Show messages from a specific session."""
+    from kyourai.state import SessionDB
+
+    db = SessionDB()
+    session = db.get_session(session_id)
+    if not session:
+        console.print(f"[red]Session '{session_id}' not found.[/red]")
+        db.close()
+        return
+
+    msgs = db.get_messages(session_id, limit=limit)
+    db.close()
+
+    console.print(Panel.fit(
+        f"[bold]{session.get('title') or session_id}[/bold]\n"
+        f"Source: {session.get('source', '')}  "
+        f"Model: {session.get('model', '')}  "
+        f"Messages: {session.get('message_count', 0)}",
+        border_style="cyan",
+    ))
+
+    for m in msgs:
+        role = m.get("role", "")
+        content = m.get("content", "")
+        if not content:
+            continue
+        if role == "user":
+            console.print(f"[bold green]user[/bold green]: {content[:200]}")
+        elif role == "assistant":
+            console.print(f"[bold blue]assistant[/bold blue]: {content[:200]}")
+        elif role == "tool":
+            console.print(f"[dim]tool({m.get('tool_name', '')}): {content[:100]}[/dim]")
+
+
+# ---------------------------------------------------------------------------
+# insights — usage analytics
+# ---------------------------------------------------------------------------
+
+@main.command("insights")
+@click.option("--days", default=30, help="Days to look back")
+def insights(days: int) -> None:
+    """Show usage insights and analytics."""
+    from kyourai.state import SessionDB, InsightsEngine
+
+    db = SessionDB()
+    engine = InsightsEngine(db)
+    report = engine.generate(days=days)
+    db.close()
+
+    if report.get("empty"):
+        console.print(f"[dim]No session data in the last {days} days.[/dim]")
+        return
+
+    ov = report["overview"]
+    console.print(Panel.fit(
+        f"[bold cyan]Kyourai Insights — Last {days} days[/bold cyan]",
+        border_style="cyan",
+    ))
+
+    # Overview
+    table = Table(title="Overview", show_header=False)
+    table.add_column("Metric", style="bold")
+    table.add_column("Value", justify="right")
+    table.add_row("Sessions", str(ov.get("total_sessions", 0)))
+    table.add_row("Active sessions", str(ov.get("active_sessions", 0)))
+    table.add_row("Messages", str(ov.get("total_messages", 0)))
+    table.add_row("Tool calls", str(ov.get("total_tool_calls", 0)))
+    table.add_row("Facts stored", str(ov.get("total_facts", 0)))
+    table.add_row("Avg msgs/session", str(ov.get("avg_messages_per_session", 0)))
+    console.print(table)
+
+    # Models
+    if report.get("models"):
+        table = Table(title="Models")
+        table.add_column("Model", style="blue")
+        table.add_column("Sessions", justify="right")
+        table.add_column("Messages", justify="right")
+        table.add_column("Tool calls", justify="right")
+        for m in report["models"]:
+            table.add_row(
+                m["model"],
+                str(m["sessions"]),
+                str(m["messages"]),
+                str(m["tool_calls"]),
+            )
+        console.print(table)
+
+    # Tools
+    if report.get("tools"):
+        table = Table(title="Tool Usage")
+        table.add_column("Tool", style="magenta")
+        table.add_column("Calls", justify="right")
+        for t in report["tools"]:
+            table.add_row(t["tool_name"], str(t["call_count"]))
+        console.print(table)
+
+    # Activity
+    activity = report.get("activity", {})
+    if activity.get("by_day"):
+        console.print("\n[bold]Activity (messages per day):[/bold]")
+        for day, count in activity["by_day"][-14:]:  # last 14 days
+            bar = "█" * min(count, 40)
+            console.print(f"  {day} [dim]{bar}[/dim] {count}")
 
 
 if __name__ == "__main__":

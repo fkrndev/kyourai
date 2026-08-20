@@ -26,6 +26,7 @@ from kyourai.memory.builtin import BuiltinMemoryProvider
 from kyourai.memory.holographic.provider import HolographicMemoryProvider
 from kyourai.memory.holographic.store import MemoryStore
 from kyourai.memory import curator as curator_module
+from kyourai.state import SessionDB
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,21 @@ class KyouraiAgent:
 
         # Track last user activity for curator idle detection
         self._last_activity_ts: float = time.time()
+
+        # Session state persistence (SQLite + FTS5)
+        self.session_db: SessionDB | None = None
+        try:
+            self.session_db = SessionDB()
+            source = "team" if team_id else "cli"
+            self.session_db.create_session(
+                session_id,
+                source=source,
+                model=model,
+                team_id=team_id or "",
+                user_id=user_id or "",
+            )
+        except Exception as e:
+            logger.warning("SessionDB init failed (session persistence disabled): %s", e)
 
         # Build memory manager with builtin + holographic providers
         self.memory_manager = MemoryManager()
@@ -330,6 +346,13 @@ class KyouraiAgent:
         # Track user activity for curator idle detection
         self._last_activity_ts = time.time()
 
+        # Persist user message to session DB
+        if self.session_db:
+            try:
+                self.session_db.add_message(self.session_id, role="user", content=user_prompt)
+            except Exception:
+                pass
+
         # Prefetch memory context for this query
         prefetch = self.memory_manager.prefetch_all(user_prompt)
         full_prompt = user_prompt
@@ -341,12 +364,29 @@ class KyouraiAgent:
             self._curator_runner.maybe_run()
 
         result = await self._agent.run(full_prompt, deps=self, message_history=message_history)
+
+        # Persist assistant response to session DB
+        if self.session_db:
+            try:
+                self.session_db.add_message(
+                    self.session_id, role="assistant", content=result.output
+                )
+            except Exception:
+                pass
+
         return result.output
 
     async def run_stream(self, user_prompt: str, *, message_history: list | None = None):
         """Run the agent with streaming output."""
         # Track user activity for curator idle detection
         self._last_activity_ts = time.time()
+
+        # Persist user message to session DB
+        if self.session_db:
+            try:
+                self.session_db.add_message(self.session_id, role="user", content=user_prompt)
+            except Exception:
+                pass
 
         prefetch = self.memory_manager.prefetch_all(user_prompt)
         full_prompt = user_prompt
@@ -356,21 +396,54 @@ class KyouraiAgent:
         if self._curator_runner:
             self._curator_runner.maybe_run()
 
+        collected = []
         async with self._agent.run_stream(full_prompt, deps=self, message_history=message_history) as result:
             async for chunk in result.stream_text(delta=True):
+                collected.append(chunk)
                 yield chunk
 
+        # Persist streamed assistant response to session DB
+        if self.session_db and collected:
+            try:
+                self.session_db.add_message(
+                    self.session_id, role="assistant", content="".join(collected)
+                )
+            except Exception:
+                pass
+
     def sync_turn(self, user_content: str, assistant_content: str) -> None:
-        """Sync a turn to memory (non-blocking)."""
+        """Sync a turn to memory (non-blocking).
+
+        Also persists the turn to the session DB for history/search.
+        """
         self.memory_manager.sync_all(user_content, assistant_content, session_id=self.session_id)
+        if self.session_db:
+            try:
+                self.session_db.add_turn(
+                    self.session_id, user_content, assistant_content
+                )
+            except Exception:
+                pass
+
+    def get_message_history(self, *, limit: int = 50) -> list[dict[str, str]]:
+        """Get message history for this session (for rewind/continuation)."""
+        if not self.session_db:
+            return []
+        return self.session_db.get_message_history(self.session_id, limit=limit)
 
     def shutdown(self) -> None:
-        """Shutdown all memory providers, curator, and cron scheduler."""
+        """Shutdown all memory providers, curator, cron scheduler, and session DB."""
         if self._cron_scheduler:
             self._cron_scheduler.stop()
         if self._curator_runner:
             self._curator_runner.wait(timeout=5.0)
         self.memory_manager.shutdown_all()
+        if self.session_db:
+            try:
+                self.session_db.end_session(self.session_id)
+                self.session_db.close()
+            except Exception:
+                pass
 
     @property
     def recall_indicator(self) -> str:

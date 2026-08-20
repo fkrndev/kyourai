@@ -8,7 +8,11 @@ Endpoints:
   GET  /v1/models              — list available models
   GET  /v1/models/{id}         — get model info
   POST /v1/chat/completions    — chat completion (streaming + non-streaming)
-  POST /v1/embeddings          — embeddings (delegated to underlying provider)
+  POST /v1/embeddings          — embeddings (not supported, returns 501)
+  GET  /v1/sessions            — list session history
+  GET  /v1/sessions/{id}       — get session with messages
+  GET  /v1/sessions/search?q=  — full-text search session messages
+  GET  /v1/insights            — usage analytics
   GET  /health                 — health check
 
 Authentication: Bearer token via KYOURAI_API_KEY env var (optional).
@@ -284,6 +288,72 @@ def create_app(
         _check_auth(request)
         # Embeddings are not supported — Kyourai uses HRR, not embeddings.
         raise HTTPException(status_code=501, detail="Kyourai uses HRR vectors, not embeddings. Use the MCP server for memory search.")
+
+    # -- Session history endpoints ------------------------------------------
+
+    @app.get("/v1/sessions")
+    async def list_sessions(
+        request: Request,
+        limit: int = 50,
+        offset: int = 0,
+        source: str | None = None,
+    ):
+        """List session history."""
+        _check_auth(request)
+        from kyourai.state import SessionDB
+
+        db = SessionDB()
+        try:
+            sessions = db.list_sessions(limit=limit, offset=offset, source=source)
+            total = db.count_sessions(source=source)
+        finally:
+            db.close()
+        return {"object": "list", "data": sessions, "total": total}
+
+    @app.get("/v1/sessions/{session_id}")
+    async def get_session(session_id: str, request: Request):
+        """Get a specific session with its messages."""
+        _check_auth(request)
+        from kyourai.state import SessionDB
+
+        db = SessionDB()
+        try:
+            session = db.get_session(session_id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Session not found")
+            messages = db.get_messages(session_id, limit=200)
+        finally:
+            db.close()
+        return {"session": session, "messages": messages}
+
+    @app.get("/v1/sessions/search")
+    async def search_sessions(request: Request, q: str, limit: int = 20):
+        """Full-text search across session messages."""
+        _check_auth(request)
+        from kyourai.state import SessionDB
+
+        db = SessionDB()
+        try:
+            results = db.search_messages(q, limit=limit)
+        finally:
+            db.close()
+        return {"query": q, "results": results, "count": len(results)}
+
+    # -- Insights endpoint ---------------------------------------------------
+
+    @app.get("/v1/insights")
+    async def insights(request: Request, days: int = 30):
+        """Get usage insights and analytics."""
+        _check_auth(request)
+        from kyourai.state import SessionDB, InsightsEngine
+
+        db = SessionDB()
+        try:
+            engine = InsightsEngine(db)
+            report = engine.generate(days=days)
+        finally:
+            db.close()
+        return report
 
     return app
 
