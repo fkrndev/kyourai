@@ -847,5 +847,62 @@ def insights(days: int) -> None:
             console.print(f"  {day} [dim]{bar}[/dim] {count}")
 
 
+# ---------------------------------------------------------------------------
+# providers — list available LLM providers
+# ---------------------------------------------------------------------------
+
+@main.command("providers")
+def providers() -> None:
+    """List available LLM providers and their status."""
+    from kyourai.providers import list_providers
+
+    provider_list = list_providers()
+
+    table = Table(title="Available LLM Providers")
+    table.add_column("Provider", style="cyan")
+    table.add_column("Default Model", style="blue")
+    table.add_column("Env Key", style="magenta")
+    table.add_column("Status", justify="center")
+    table.add_column("Description", style="dim")
+
+    for p in provider_list:
+        status = "[green]✓ Ready[/green]" if p["has_key"] else "[red]✗ No key[/red]"
+        table.add_row(
+            p["name"],
+            p["default_model"],
+            p["env_key"],
+            status,
+            p["description"],
+        )
+
+    console.print(table)
+    console.print(
+        "\n[dim]Set API keys via environment variables. "
+        "Use provider:model format (e.g. anthropic:claude-3.5-sonnet).[/dim]"
+    )
+
+
+# ---------------------------------------------------------------------------
+# tui — terminal UI
+# ---------------------------------------------------------------------------
+
+@main.command("tui")
+@click.option("--model", default=None, help="Model to use (e.g. openai:gpt-4o)")
+def tui(model: str | None) -> None:
+    """Start the terminal UI (TUI) for interactive chat."""
+    model = model or get_config_value("agent.model", "openai:gpt-4o")
+
+    try:
+        from kyourai.tui import run_tui
+        run_tui(model=model)
+    except ImportError:
+        console.print(
+            "[red]TUI requires 'textual' package. Install with:[/red]\n"
+            "  pip install textual"
+        )
+    except KeyboardInterrupt:
+        pass
+
+
 if __name__ == "__main__":
     main()

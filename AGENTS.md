@@ -55,6 +55,8 @@ All tests use temp directories and clean up after themselves.
 - `kyourai/state/db.py` — SessionDB (SQLite + FTS5 session/message store)
 - `kyourai/state/insights.py` — InsightsEngine (usage analytics over sessions)
 - `kyourai/api/server.py` — OpenAI-compatible API server (/v1/chat/completions, /v1/sessions, /v1/insights)
+- `kyourai/providers/__init__.py` — Multi-provider adapters (OpenAI, Anthropic, Google, Bedrock, Ollama, Groq, Mistral)
+- `kyourai/tui/__init__.py` — Terminal UI (Textual) — split pane chat + memory sidebar
 - `dashboard/` — Next.js dashboard (TypeScript + Tailwind, 4 tabs, API proxy to FastAPI)
 - `kyourai/agent/_main.py` — KyouraiAgent (Pydantic AI + memory + skills + cron + session + tools + compression + retry + rate limit)
 - `kyourai/agent/error_classifier.py` — Error classification (retryable vs fatal)
@@ -144,3 +146,15 @@ All tests use temp directories and clean up after themselves.
     PLUGIN_METADATA dict. Plugins can register hooks for agent events
     (pre_run, post_run, pre_tool, post_tool, session_start/end, memory_sync).
     Same trust model as pip install — only install plugins you trust.
+
+16. **Multi-provider adapters**: `kyourai/providers/` wraps pydantic-ai's
+    provider system with unified model string parsing (`provider:model`),
+    API key validation, and fallback chains. Supports 7 providers: OpenAI,
+    Anthropic, Google Gemini, AWS Bedrock, Ollama (local), Groq, Mistral.
+    `kyourai providers` command lists all providers with API key status.
+
+17. **Terminal UI (TUI)**: `kyourai tui` starts a Textual-based TUI with
+    split-pane layout: chat log (left), memory sidebar showing recent facts
+    with trust bars (right), input field (bottom). Keyboard shortcuts:
+    Ctrl+M toggle memory, Ctrl+L clear, Ctrl+C quit. Falls back to TestModel
+    if no API key configured.

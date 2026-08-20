@@ -96,7 +96,18 @@ class KyouraiAgent:
         skills_allowlist: list[str] | None = None,
         extra_instructions: str = "",
     ):
-        self.model = model
+        # Resolve model through provider adapter system
+        # (handles API keys, provider-specific config, fallbacks)
+        from kyourai.providers import resolve_model, parse_model_string
+        try:
+            self.model = resolve_model(model)
+            self._provider_name, self._model_name = parse_model_string(model)
+        except ValueError:
+            # Provider not configured (missing API key etc.) — pass through
+            # to pydantic-ai as-is (e.g. TestModel, or user has key in env)
+            self.model = model
+            self._provider_name, self._model_name = parse_model_string(model)
+
         self.session_id = session_id
         self.team_id = team_id
         self.user_id = user_id
