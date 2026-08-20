@@ -15,7 +15,7 @@
 
 # next.js
 /.next/
-/out/
+# /out/ is committed — pre-built static export served by FastAPI
 
 # production
 /build

@@ -45,4 +45,4 @@ cron_state.json
 # Next.js dashboard
 dashboard/node_modules/
 dashboard/.next/
-dashboard/out/
+# dashboard/out/ is committed — pre-built static export served by FastAPI

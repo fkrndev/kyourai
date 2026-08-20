@@ -2,18 +2,39 @@
 
 Modern web dashboard for Kyourai — analytics, session history, search, and live chat.
 
-## Quick start
+## Quick start (end user)
+
+```bash
+kyourai serve --port 8000
+# → Dashboard: http://localhost:8000/
+```
+
+The dashboard is pre-built and committed in `out/`. FastAPI serves it
+directly — **no Node.js required** for end users.
+
+## Development (dashboard developer)
 
 ```bash
 # 1. Start the Kyourai API server
 kyourai serve --port 8000
 
-# 2. Start the dashboard (in another terminal)
+# 2. Start the dashboard with hot reload
 cd dashboard
 npm run dev
+# → http://localhost:3000 (proxies API to :8000)
 ```
 
-Dashboard runs at http://localhost:3000 and proxies API calls to http://localhost:8000.
+## Rebuild static export
+
+After changing dashboard code, rebuild the static export that FastAPI serves:
+
+```bash
+cd dashboard
+npm run build:static
+# → outputs to dashboard/out/ (commit this to git)
+git add out/
+git commit -m "Rebuild dashboard static export"
+```
 
 ## Features
 
