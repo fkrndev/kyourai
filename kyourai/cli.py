@@ -652,8 +652,7 @@ def serve(host: str, port: int, model: str | None, api_key: str | None) -> None:
         f"[bold cyan]Kyourai API Server[/bold cyan]\n"
         f"Host: {host}:{port}\n"
         f"Model: {model}\n"
-        f"Dashboard (basic): http://{host}:{port}/\n"
-        f"Dashboard (Next.js): cd dashboard && npm run dev\n"
+        f"Dashboard: cd dashboard && npm run dev\n"
         f"  → http://localhost:3000 (proxies API to :{port})\n"
         f"API: /v1/chat/completions, /v1/models, /v1/sessions, /v1/insights",
         border_style="cyan",
