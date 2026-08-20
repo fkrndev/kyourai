@@ -223,3 +223,223 @@ async def compress_if_needed(
         estimate_message_tokens(compressed),
     )
     return compressed
+
+
+# ---------------------------------------------------------------------------
+# Multi-strategy compression (advanced)
+# ---------------------------------------------------------------------------
+
+# Strategies available (in order of aggressiveness)
+COMPRESSION_STRATEGIES = ["sliding_window", "importance", "semantic", "summarize"]
+
+
+def _score_message_importance(msg: dict[str, str]) -> float:
+    """Score a message by importance (0.0 - 1.0).
+
+    Higher score = more important = should be kept verbatim.
+    Factors: code blocks, tool calls, user decisions, length, recency.
+    """
+    content = msg.get("content", "")
+    if not content:
+        return 0.0
+
+    score = 0.0
+
+    # Code blocks are important
+    if "```" in content:
+        score += 0.3
+
+    # Tool calls / function calls
+    if '"tool_call"' in content or '"function_call"' in content:
+        score += 0.2
+
+    # Error messages
+    if "error" in content.lower() or "traceback" in content.lower():
+        score += 0.15
+
+    # User decisions / instructions
+    if msg.get("role") == "user":
+        score += 0.2
+        # Questions are important context
+        if "?" in content:
+            score += 0.1
+
+    # System messages are always important
+    if msg.get("role") == "system":
+        score += 0.5
+
+    # Longer messages may contain more context
+    length_score = min(len(content) / 2000, 0.2)
+    score += length_score
+
+    return min(score, 1.0)
+
+
+def compress_sliding_window(
+    messages: list[dict[str, str]],
+    *,
+    keep_recent: int = DEFAULT_KEEP_RECENT,
+) -> list[dict[str, str]]:
+    """Sliding window strategy — keep only N most recent messages.
+
+    Simplest strategy: drop everything except the last N messages.
+    No summarization needed.
+    """
+    if len(messages) <= keep_recent:
+        return messages
+    return messages[-keep_recent:]
+
+
+def compress_importance_based(
+    messages: list[dict[str, str]],
+    *,
+    keep_recent: int = DEFAULT_KEEP_RECENT,
+    keep_ratio: float = 0.5,
+) -> list[dict[str, str]]:
+    """Importance-based strategy — keep most important + recent messages.
+
+    Scores each message by importance and keeps the top fraction,
+    plus all recent messages.
+    """
+    if len(messages) <= DEFAULT_MIN_MESSAGES_TO_COMPRESS:
+        return messages
+
+    # Always keep recent messages
+    old, recent = split_messages(messages, keep_recent=keep_recent)
+    if not old:
+        return messages
+
+    # Score old messages
+    scored = [(i, _score_message_importance(msg), msg) for i, msg in enumerate(old)]
+
+    # Sort by score (descending) and keep top fraction
+    scored.sort(key=lambda x: x[1], reverse=True)
+    keep_count = max(1, int(len(old) * keep_ratio))
+    kept = scored[:keep_count]
+
+    # Sort kept messages back by original order
+    kept.sort(key=lambda x: x[0])
+
+    return [m for _, _, m in kept] + recent
+
+
+def compress_semantic(
+    messages: list[dict[str, str]],
+    *,
+    keep_recent: int = DEFAULT_KEEP_RECENT,
+    model: Any = None,
+) -> list[dict[str, str]]:
+    """Semantic strategy — cluster messages by topic, keep representatives.
+
+    Groups messages by topic similarity (simple keyword overlap) and
+    keeps one representative per cluster plus all recent messages.
+    """
+    if len(messages) <= DEFAULT_MIN_MESSAGES_TO_COMPRESS:
+        return messages
+
+    old, recent = split_messages(messages, keep_recent=keep_recent)
+    if not old:
+        return messages
+
+    # Simple keyword-based clustering
+    clusters: list[list[int]] = []  # list of (message indices in old)
+    cluster_keywords: list[set[str]] = []
+
+    for i, msg in enumerate(old):
+        content = msg.get("content", "").lower()
+        words = set(content.split())
+        # Filter out common words
+        words -= {"the", "a", "an", "is", "are", "was", "were", "be", "been",
+                   "have", "has", "had", "do", "does", "did", "will", "would",
+                   "could", "should", "may", "might", "can", "to", "of", "in",
+                   "on", "at", "by", "for", "with", "from", "and", "or", "but",
+                   "not", "no", "yes", "i", "you", "he", "she", "it", "we",
+                   "they", "this", "that", "these", "those"}
+
+        # Find matching cluster
+        matched = False
+        for ci, kw in enumerate(cluster_keywords):
+            if words & kw:  # overlap
+                clusters[ci].append(i)
+                cluster_keywords[ci] |= words
+                matched = True
+                break
+
+        if not matched:
+            clusters.append([i])
+            cluster_keywords.append(words)
+
+    # Keep the last message from each cluster (most recent in topic)
+    kept_indices: list[int] = []
+    for cluster in clusters:
+        kept_indices.append(cluster[-1])  # most recent in cluster
+
+    kept_indices.sort()
+    kept_messages = [old[i] for i in kept_indices]
+
+    return kept_messages + recent
+
+
+async def compress_multi_strategy(
+    messages: list[dict[str, str]],
+    *,
+    strategy: str = "summarize",
+    model: Any = None,
+    model_context: int = DEFAULT_MODEL_CONTEXT,
+    threshold: float = DEFAULT_COMPRESS_THRESHOLD,
+    system_prompt_tokens: int = 0,
+    keep_recent: int = DEFAULT_KEEP_RECENT,
+) -> list[dict[str, str]]:
+    """Compress using the specified strategy.
+
+    Strategies (least to most aggressive):
+      - sliding_window: Keep only N recent messages (no summarization)
+      - importance: Keep most important + recent messages (no summarization)
+      - semantic: Cluster by topic, keep representatives + recent
+      - summarize: Full summarization of old messages (default, most context preserved)
+
+    Args:
+        messages: Message history
+        strategy: Compression strategy name
+        model: Model for summarization (only needed for "summarize")
+        model_context: Model's max context window
+        threshold: Compression trigger fraction
+        system_prompt_tokens: Tokens reserved by system prompt
+        keep_recent: Messages to keep verbatim
+
+    Returns:
+        Potentially compressed message list
+    """
+    if not should_compress(
+        messages,
+        model_context=model_context,
+        threshold=threshold,
+        system_prompt_tokens=system_prompt_tokens,
+    ):
+        return messages
+
+    logger.info("Compressing %d messages using '%s' strategy", len(messages), strategy)
+
+    if strategy == "sliding_window":
+        result = compress_sliding_window(messages, keep_recent=keep_recent)
+    elif strategy == "importance":
+        result = compress_importance_based(messages, keep_recent=keep_recent)
+    elif strategy == "semantic":
+        result = compress_semantic(messages, keep_recent=keep_recent, model=model)
+    else:  # "summarize" (default)
+        return await compress_if_needed(
+            messages,
+            model=model,
+            model_context=model_context,
+            threshold=threshold,
+            system_prompt_tokens=system_prompt_tokens,
+            keep_recent=keep_recent,
+        )
+
+    logger.info(
+        "Compressed (%s): %d → %d messages",
+        strategy,
+        len(messages),
+        len(result),
+    )
+    return result

@@ -162,6 +162,7 @@ def build_system_prompt(
     config: dict[str, Any] | None = None,
     extra_instructions: str = "",
     verify_output: bool = False,
+    coding_context: str = "",
 ) -> str:
     """Assemble the complete system prompt from all components.
 
@@ -175,6 +176,7 @@ def build_system_prompt(
         config: User config dict for preferences
         extra_instructions: Extra instructions passed at init
         verify_output: Whether output verification is enabled
+        coding_context: Coding context prompt section (git, language, framework)
 
     Returns:
         Complete system prompt string
@@ -184,6 +186,10 @@ def build_system_prompt(
     # Memory section
     if memory_prompt:
         parts.append(f"\n\n{memory_prompt}")
+
+    # Coding context (detected from working directory)
+    if coding_context:
+        parts.append(f"\n\n{coding_context}")
 
     # Tools section
     if tool_schemas:

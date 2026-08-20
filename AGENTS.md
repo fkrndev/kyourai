@@ -54,9 +54,16 @@ All tests use temp directories and clean up after themselves.
 - `kyourai/context/compressor.py` — Context compression (token estimation, summary generation)
 - `kyourai/state/db.py` — SessionDB (SQLite + FTS5 session/message store)
 - `kyourai/state/insights.py` — InsightsEngine (usage analytics over sessions)
-- `kyourai/api/server.py` — OpenAI-compatible API server (/v1/chat/completions, /v1/sessions, /v1/insights)
+- `kyourai/api/server.py` — OpenAI-compatible API server (/v1/chat/completions, /v1/sessions, /v1/insights, /v1/health/detailed)
 - `kyourai/providers/__init__.py` — Multi-provider adapters (OpenAI, Anthropic, Google, Bedrock, Ollama, Groq, Mistral)
 - `kyourai/tui/__init__.py` — Terminal UI (Textual) — split pane chat + memory sidebar
+- `kyourai/production.py` — Production hardening (config validation, graceful shutdown, health checks, structured logging)
+- `kyourai/security/redaction.py` — Credential redaction (API keys, tokens, PII scanning)
+- `kyourai/context/coding.py` — Coding context detection (git, language, framework → system prompt)
+- `kyourai/context/sanitizer.py` — Message sanitization (role alternation, control chars, validation)
+- `kyourai/usage.py` — Usage/pricing tracker (token usage + cost estimation per session)
+- `kyourai/mcp/catalog.py` — MCP server catalog (discovery, registration, connection)
+- `kyourai/tools/shell_hooks.py` — Shell hooks (pre/post command hooks: block, warn, run, log)
 - `dashboard/` — Next.js dashboard (TypeScript + Tailwind, 4 tabs, API proxy to FastAPI)
 - `kyourai/agent/_main.py` — KyouraiAgent (Pydantic AI + memory + skills + cron + session + tools + compression + retry + rate limit)
 - `kyourai/agent/error_classifier.py` — Error classification (retryable vs fatal)
@@ -158,3 +165,53 @@ All tests use temp directories and clean up after themselves.
     with trust bars (right), input field (bottom). Keyboard shortcuts:
     Ctrl+M toggle memory, Ctrl+L clear, Ctrl+C quit. Falls back to TestModel
     if no API key configured.
+
+18. **MCP server catalog**: `kyourai mcp` command group for discovering,
+    registering, and connecting to external MCP servers. 10 bundled server
+    templates (filesystem, sqlite, postgres, github, brave-search, puppeteer,
+    memory, time, fetch, sequential-thinking). Catalog persisted in
+    `~/.kyourai/mcp_catalog.json`. Auto-connect support for agent startup.
+
+19. **Production hardening**: `kyourai/production.py` provides:
+    - Config validation + migration (validate config.yaml at startup)
+    - Graceful shutdown (SIGTERM/SIGINT handling, cleanup callbacks)
+    - Detailed health check (DB, memory, home dir, config status)
+    - Structured logging (JSON format for observability)
+    CLI: `kyourai health`, `kyourai config-validate`.
+    API: `/v1/health/detailed`.
+
+20. **Credential redaction**: `kyourai/security/redaction.py` scans text
+    for API keys (OpenAI, Anthropic, AWS, Google, Stripe), tokens (GitHub,
+    GitLab, Slack, JWT, Bearer), private keys, and passwords. Replaces
+    with `[REDACTED:type]` placeholders. Integrated into API server —
+    all incoming messages are redacted before processing. Also provides
+    `scan_for_secrets()` for auditing without redaction.
+
+21. **Coding context detection**: `kyourai/context/coding.py` detects
+    git repo (branch, status, remote), languages (by file extension count),
+    frameworks (Python, JS, Rust, Go — by config files and dependencies),
+    package managers, test frameworks, linters. Injected into system prompt
+    at agent init. CLI: `kyourai context`.
+
+22. **Usage/pricing tracker**: `kyourai/usage.py` tracks token usage
+    (prompt_tokens, completion_tokens) and estimates cost per session.
+    Pricing table for 30+ models across 7 providers. Persisted in session
+    DB. CLI: `kyourai usage [--by-model]`.
+
+23. **Message sanitization**: `kyourai/context/sanitizer.py` ensures
+    message history is well-formed: strict role alternation, merge
+    consecutive same-role messages, strip control characters, truncate
+    long messages, ensure system prompt is first. `validate_messages()`
+    for auditing.
+
+24. **Advanced context compressor**: Multi-strategy compression in
+    `kyourai/context/compressor.py`:
+    - `sliding_window`: Keep only N recent messages
+    - `importance`: Score messages by code blocks, tool calls, errors → keep top
+    - `semantic`: Cluster by topic similarity → keep representatives
+    - `summarize`: Full LLM summarization (default, most context preserved)
+
+25. **Shell hooks**: `kyourai/tools/shell_hooks.py` — pre/post hooks for
+    terminal commands. Actions: block (prevent dangerous commands), warn,
+    run (execute post-commands like auto-test), log, notify. Pattern-based
+    matching with regex. Configurable via `config.yaml` under `shell_hooks`.

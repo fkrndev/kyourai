@@ -306,6 +306,15 @@ class KyouraiAgent:
         if self.skill_loader:
             skills_prompt = self.skill_loader.build_prompt_block() or ""
 
+        # Detect coding context from working directory
+        coding_context_prompt = ""
+        try:
+            from kyourai.context.coding import detect_coding_context
+            ctx = detect_coding_context()
+            coding_context_prompt = ctx.to_prompt()
+        except Exception:
+            pass  # Non-fatal — coding context is optional
+
         # Build the system prompt dynamically
         system_prompt = build_system_prompt(
             memory_prompt=self.memory_manager.build_system_prompt(),
@@ -314,6 +323,7 @@ class KyouraiAgent:
             config=self._config if hasattr(self, "_config") else None,
             extra_instructions=extra_instructions,
             verify_output=bool(get_config_value("agent.verify_output", False)),
+            coding_context=coding_context_prompt,
         )
 
         # Build tools from memory manager schemas
@@ -522,6 +532,20 @@ class KyouraiAgent:
             result = await self._agent.run(
                 user_prompt, deps=self, message_history=message_history
             )
+            # Track usage if available
+            try:
+                from kyourai.usage import UsageTracker
+                tracker = UsageTracker()
+                usage = getattr(result, "usage", None)
+                if usage:
+                    tracker.record(
+                        session_id=self.session_id,
+                        model=str(self.model),
+                        prompt_tokens=getattr(usage, "request_tokens", 0) or 0,
+                        completion_tokens=getattr(usage, "response_tokens", 0) or 0,
+                    )
+            except Exception:
+                pass  # Usage tracking is non-fatal
             return result.output
 
         for empty_attempt in range(max_empty_retries + 1):

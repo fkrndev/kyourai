@@ -777,6 +777,276 @@ def sessions_show(session_id: str, limit: int) -> None:
 
 
 # ---------------------------------------------------------------------------
+# mcp — MCP server catalog management
+# ---------------------------------------------------------------------------
+
+@main.group("mcp")
+def mcp_group() -> None:
+    """MCP server catalog — discover, register, and connect to MCP servers."""
+
+
+@mcp_group.command("list")
+def mcp_list() -> None:
+    """List registered MCP servers."""
+    from kyourai.mcp.catalog import MCPCatalog
+
+    catalog = MCPCatalog()
+    servers = catalog.list_servers()
+
+    if not servers:
+        console.print("[dim]No MCP servers registered. Use 'kyourai mcp bundled' to see available servers.[/dim]")
+        return
+
+    table = Table(title="Registered MCP Servers")
+    table.add_column("Name", style="cyan")
+    table.add_column("Transport", style="blue")
+    table.add_column("Enabled", justify="center")
+    table.add_column("Connected", justify="center")
+    table.add_column("Description", style="dim")
+
+    for s in servers:
+        enabled = "[green]✓[/green]" if s.enabled else "[red]✗[/red]"
+        connected = "[green]✓[/green]" if s.connected else "[dim]—[/dim]"
+        table.add_row(s.name, s.transport, enabled, connected, s.description)
+
+    console.print(table)
+
+
+@mcp_group.command("bundled")
+def mcp_bundled() -> None:
+    """List bundled MCP server templates."""
+    from kyourai.mcp.catalog import MCPCatalog
+
+    catalog = MCPCatalog()
+    bundled = catalog.list_bundled()
+
+    table = Table(title="Bundled MCP Server Templates")
+    table.add_column("Name", style="cyan")
+    table.add_column("Command", style="blue")
+    table.add_column("Registered", justify="center")
+    table.add_column("Description", style="dim")
+
+    for b in bundled:
+        registered = "[green]✓[/green]" if b["registered"] else "[dim]—[/dim]"
+        cmd = f"{b['command']} {' '.join(b['args'][:1])}"
+        table.add_row(b["name"], cmd, registered, b["description"])
+
+    console.print(table)
+    console.print("\n[dim]Register with: kyourai mcp register-bundled <name>[/dim]")
+
+
+@mcp_group.command("register-bundled")
+@click.argument("name")
+def mcp_register_bundled(name: str) -> None:
+    """Register a bundled MCP server by name."""
+    from kyourai.mcp.catalog import MCPCatalog
+
+    catalog = MCPCatalog()
+    cfg = catalog.register_bundled(name)
+
+    if cfg:
+        console.print(f"[green]Registered MCP server:[/green] {name}")
+        console.print(f"  Command: {cfg.command} {' '.join(cfg.args)}")
+        console.print(f"  Description: {cfg.description}")
+    else:
+        console.print(f"[red]Unknown bundled server:[/red] {name}")
+        console.print("[dim]Use 'kyourai mcp bundled' to see available servers.[/dim]")
+
+
+@mcp_group.command("register")
+@click.argument("name")
+@click.option("--command", required=True, help="Command to run")
+@click.option("--args", default="", help="Arguments (space-separated)")
+@click.option("--transport", default="stdio", help="Transport: stdio, sse, streamable_http")
+@click.option("--url", default=None, help="URL for SSE/HTTP transport")
+@click.option("--description", default="", help="Description")
+@click.option("--auto-connect", is_flag=True, help="Auto-connect on agent startup")
+def mcp_register(
+    name: str,
+    command: str,
+    args: str,
+    transport: str,
+    url: str | None,
+    description: str,
+    auto_connect: bool,
+) -> None:
+    """Register a custom MCP server."""
+    from kyourai.mcp.catalog import MCPCatalog
+
+    catalog = MCPCatalog()
+    arg_list = args.split() if args else []
+    cfg = catalog.register(
+        name=name,
+        command=command,
+        args=arg_list,
+        transport=transport,
+        url=url,
+        description=description,
+        auto_connect=auto_connect,
+    )
+    console.print(f"[green]Registered MCP server:[/green] {name}")
+    console.print(f"  Command: {cfg.command} {' '.join(cfg.args)}")
+
+
+@mcp_group.command("unregister")
+@click.argument("name")
+def mcp_unregister(name: str) -> None:
+    """Remove an MCP server from the catalog."""
+    from kyourai.mcp.catalog import MCPCatalog
+
+    catalog = MCPCatalog()
+    if catalog.unregister(name):
+        console.print(f"[green]Unregistered:[/green] {name}")
+    else:
+        console.print(f"[red]Not found:[/red] {name}")
+
+
+@mcp_group.command("connect")
+@click.argument("name")
+def mcp_connect(name: str) -> None:
+    """Connect to an MCP server."""
+    from kyourai.mcp.catalog import MCPCatalog
+
+    catalog = MCPCatalog()
+    result = catalog.connect(name)
+
+    if not result:
+        console.print(f"[red]Server not found:[/red] {name}")
+        return
+
+    if result.connected:
+        console.print(f"[green]Connected:[/green] {name}")
+    elif result.error:
+        console.print(f"[red]Failed:[/red] {result.error}")
+
+
+@mcp_group.command("disconnect")
+@click.argument("name")
+def mcp_disconnect(name: str) -> None:
+    """Disconnect from an MCP server."""
+    from kyourai.mcp.catalog import MCPCatalog
+
+    catalog = MCPCatalog()
+    if catalog.disconnect(name):
+        console.print(f"[green]Disconnected:[/green] {name}")
+    else:
+        console.print(f"[red]Not connected:[/red] {name}")
+
+
+@mcp_group.command("status")
+def mcp_status() -> None:
+    """Show status of all MCP servers."""
+    from kyourai.mcp.catalog import MCPCatalog
+
+    catalog = MCPCatalog()
+    statuses = catalog.status()
+
+    if not statuses:
+        console.print("[dim]No MCP servers registered.[/dim]")
+        return
+
+    table = Table(title="MCP Server Status")
+    table.add_column("Name", style="cyan")
+    table.add_column("Enabled", justify="center")
+    table.add_column("Connected", justify="center")
+    table.add_column("Auto-Connect", justify="center")
+    table.add_column("Error", style="red")
+
+    for s in statuses:
+        enabled = "[green]✓[/green]" if s["enabled"] else "[red]✗[/red]"
+        connected = "[green]✓[/green]" if s["connected"] else "[dim]—[/dim]"
+        auto = "[green]✓[/green]" if s["auto_connect"] else "[dim]—[/dim]"
+        table.add_row(s["name"], enabled, connected, auto, s.get("error") or "")
+
+    console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# usage — token usage and cost tracking
+# ---------------------------------------------------------------------------
+
+@main.command("usage")
+@click.option("--days", default=30, help="Days to look back")
+@click.option("--by-model", is_flag=True, help="Break down by model")
+def usage(days: int, by_model: bool) -> None:
+    """Show token usage and estimated costs."""
+    from kyourai.usage import UsageTracker
+
+    tracker = UsageTracker()
+
+    if by_model:
+        by_model_data = tracker.get_by_model(days=days)
+        if not by_model_data:
+            console.print(f"[dim]No usage data in the last {days} days.[/dim]")
+            return
+
+        table = Table(title=f"Usage by Model (Last {days} days)")
+        table.add_column("Model", style="cyan")
+        table.add_column("Prompt Tokens", justify="right")
+        table.add_column("Completion Tokens", justify="right")
+        table.add_column("Total Tokens", justify="right")
+        table.add_column("Cost (USD)", justify="right", style="green")
+        table.add_column("Calls", justify="right")
+
+        for model, total in sorted(by_model_data.items(), key=lambda x: x[1].total_cost_usd, reverse=True):
+            table.add_row(
+                model,
+                f"{total.total_prompt_tokens:,}",
+                f"{total.total_completion_tokens:,}",
+                f"{total.total_tokens:,}",
+                f"${total.total_cost_usd:.4f}",
+                str(total.entry_count),
+            )
+        console.print(table)
+    else:
+        total = tracker.get_totals(days=days)
+        if total.entry_count == 0:
+            console.print(f"[dim]No usage data in the last {days} days.[/dim]")
+            return
+
+        console.print(Panel.fit(
+            f"[bold]Usage (Last {days} days)[/bold]\n\n"
+            f"Prompt tokens:     [cyan]{total.total_prompt_tokens:,}[/cyan]\n"
+            f"Completion tokens: [cyan]{total.total_completion_tokens:,}[/cyan]\n"
+            f"Total tokens:      [cyan]{total.total_tokens:,}[/cyan]\n"
+            f"Estimated cost:    [green]${total.total_cost_usd:.4f}[/green]\n"
+            f"API calls:         {total.entry_count}",
+            border_style="cyan",
+        ))
+
+
+# ---------------------------------------------------------------------------
+# context — show detected coding context
+# ---------------------------------------------------------------------------
+
+@main.command("context")
+def context() -> None:
+    """Show detected coding context for the current directory."""
+    from kyourai.context.coding import detect_coding_context
+
+    ctx = detect_coding_context()
+
+    console.print(Panel.fit(
+        f"[bold]Coding Context[/bold]\n\n"
+        f"Directory:       {ctx.directory}\n"
+        f"Project:         {ctx.project_name or '(unknown)'}\n"
+        f"Git repo:        {'yes' if ctx.is_git_repo else 'no'}\n"
+        f"Git branch:      {ctx.git_branch or '-'}\n"
+        f"Git status:      {ctx.git_status or '-'}\n"
+        f"Git remote:      {ctx.git_remote or '-'}\n"
+        f"Languages:       {', '.join(ctx.languages) or '-'}\n"
+        f"Primary:         {ctx.primary_language or '-'}\n"
+        f"Frameworks:      {', '.join(ctx.frameworks) or '-'}\n"
+        f"Package managers:{', '.join(ctx.package_managers) or '-'}\n"
+        f"Test frameworks: {', '.join(ctx.test_frameworks) or '-'}\n"
+        f"Linters:         {', '.join(ctx.linters) or '-'}\n"
+        f"Has README:      {'yes' if ctx.has_readme else 'no'}\n"
+        f"Has tests:       {'yes' if ctx.has_tests else 'no'}",
+        border_style="cyan",
+    ))
+
+
+# ---------------------------------------------------------------------------
 # insights — usage analytics
 # ---------------------------------------------------------------------------
 
@@ -845,6 +1115,71 @@ def insights(days: int) -> None:
         for day, count in activity["by_day"][-14:]:  # last 14 days
             bar = "█" * min(count, 40)
             console.print(f"  {day} [dim]{bar}[/dim] {count}")
+
+
+# ---------------------------------------------------------------------------
+# health — detailed health check
+# ---------------------------------------------------------------------------
+
+@main.command("health")
+def health() -> None:
+    """Run a detailed health check of all Kyourai components."""
+    from kyourai.production import HealthChecker
+
+    checker = HealthChecker()
+    report = checker.check_all()
+
+    status_color = "green" if report.all_healthy else "red"
+    console.print(Panel.fit(
+        f"[bold]Kyourai Health Check[/bold]\n"
+        f"Status: [{status_color}]{report.status.upper()}[/{status_color}]\n"
+        f"Version: {report.version}",
+        border_style=status_color,
+    ))
+
+    table = Table(title="Components")
+    table.add_column("Component", style="cyan")
+    table.add_column("Status", justify="center")
+    table.add_column("Detail", style="dim")
+    table.add_column("Latency (ms)", justify="right")
+
+    for comp in report.components:
+        status = "[green]✓ healthy[/green]" if comp.healthy else "[red]✗ unhealthy[/red]"
+        table.add_row(
+            comp.name,
+            status,
+            comp.detail,
+            f"{comp.latency_ms:.1f}",
+        )
+
+    console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# config-validate — validate config file
+# ---------------------------------------------------------------------------
+
+@main.command("config-validate")
+def config_validate() -> None:
+    """Validate config.yaml and show any errors or warnings."""
+    from kyourai.production import validate_config
+
+    result = validate_config()
+
+    if result.valid:
+        console.print("[green]✓ Config is valid[/green]")
+    else:
+        console.print("[red]✗ Config has errors:[/red]")
+        for err in result.errors:
+            console.print(f"  [red]• {err}[/red]")
+
+    if result.warnings:
+        console.print("\n[yellow]Warnings:[/yellow]")
+        for warn in result.warnings:
+            console.print(f"  [yellow]• {warn}[/yellow]")
+
+    if result.migrated:
+        console.print("\n[blue]Config was migrated to current version.[/blue]")
 
 
 # ---------------------------------------------------------------------------

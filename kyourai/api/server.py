@@ -193,7 +193,17 @@ def create_app(
 
     @app.get("/health")
     async def health():
+        """Basic health check (backward compatible)."""
         return {"status": "ok", "version": "0.1.0"}
+
+    @app.get("/v1/health/detailed")
+    async def health_detailed(request: Request):
+        """Detailed health check — component status, latency, diagnostics."""
+        _check_auth(request)
+        from kyourai.production import HealthChecker
+        checker = HealthChecker()
+        report = checker.check_all()
+        return report.to_dict()
 
     @app.get("/v1/models")
     async def list_models(request: Request):
@@ -220,8 +230,20 @@ def create_app(
         model = _resolve_model(req.model)
         agent = _get_agent(session_id, model)
 
-        user_message = _extract_user_message(req.messages)
-        history = _build_history(req.messages)
+        # Redact sensitive data from messages before processing
+        from kyourai.security import redact_messages
+        raw_messages = [{"role": m.role, "content": m.content} for m in req.messages]
+        redacted = redact_messages(raw_messages)
+        if any(r.get("content") != orig.get("content")
+               for r, orig in zip(redacted, raw_messages)):
+            logger.warning("Redacted sensitive data from chat request")
+
+        user_message = _extract_user_message(
+            [ChatMessage(role=m["role"], content=m["content"]) for m in redacted]
+        )
+        history = _build_history(
+            [ChatMessage(role=m["role"], content=m["content"]) for m in redacted]
+        )
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         created = int(time.time())
