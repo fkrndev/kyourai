@@ -64,6 +64,16 @@ All tests use temp directories and clean up after themselves.
 - `kyourai/usage.py` — Usage/pricing tracker (token usage + cost estimation per session)
 - `kyourai/mcp/catalog.py` — MCP server catalog (discovery, registration, connection)
 - `kyourai/tools/shell_hooks.py` — Shell hooks (pre/post command hooks: block, warn, run, log)
+- `kyourai/tools/policy.py` — Tool policy system (allow/deny, sandbox, availability conditions)
+- `kyourai/tools/goals.py` — Goal management (track objectives with progress, sub-goals, priorities)
+- `kyourai/tools/link_understanding.py` — URL extraction with SSRF protection + safe fetching
+- `kyourai/agent/subagent_enhanced.py` — Enhanced subagent system (registry, lifecycle, spawn modes, tool policy inheritance)
+- `kyourai/tasks/flows.py` — Task flow orchestration (multi-step tasks, revision-based concurrency, SQLite persistence)
+- `kyourai/trajectory.py` — Trajectory recording (bounded session events, payload sanitization, export)
+- `kyourai/security/content.py` — External content security (prompt injection detection, content wrapping, homoglyph detection)
+- `kyourai/secrets/resolver.py` — Multi-source secret resolution (env, file, exec, store with security validation)
+- `kyourai/snapshot.py` — Snapshot/backup system (SQLite snapshots with SHA256 integrity, git backup)
+- `kyourai/audit.py` — Audit event system (non-blocking queue, execution identity, SQLite persistence)
 - `dashboard/` — Next.js dashboard (TypeScript + Tailwind, 4 tabs, API proxy to FastAPI)
 - `kyourai/agent/_main.py` — KyouraiAgent (Pydantic AI + memory + skills + cron + session + tools + compression + retry + rate limit)
 - `kyourai/agent/error_classifier.py` — Error classification (retryable vs fatal)
@@ -215,3 +225,57 @@ All tests use temp directories and clean up after themselves.
     terminal commands. Actions: block (prevent dangerous commands), warn,
     run (execute post-commands like auto-test), log, notify. Pattern-based
     matching with regex. Configurable via `config.yaml` under `shell_hooks`.
+
+26. **Enhanced subagent system**: `kyourai/agent/subagent_enhanced.py` —
+    SubagentRegistry tracks all subagent runs with lifecycle states
+    (pending → running → succeeded/failed/cancelled/timed_out/lost).
+    Spawn modes: run (fire-and-forget) and collect (swarm parallel).
+    Tool policy inheritance from parent. Depth limiting (max 3) and
+    children limiting (max 5 per agent). Controller scope for session tree.
+
+27. **Tool policy system**: `kyourai/tools/policy.py` — allow/deny lists
+    with wildcard support, sandbox mode (workspace-only file access),
+    availability conditions (env, config, auth, plugin-enabled), tool
+    descriptors with owner tracking, policy composition/merge. Preset
+    policies: SUBAGENT_SAFE_POLICY, READONLY_POLICY, SANDBOX_POLICY.
+
+28. **Task flow orchestration**: `kyourai/tasks/flows.py` — multi-step
+    task flows with revision-based optimistic concurrency, status lifecycle
+    (queued → running → waiting → blocked → succeeded/failed/cancelled),
+    delivery state tracking, parent-child relationships, SQLite persistence.
+
+29. **Trajectory recording**: `kyourai/trajectory.py` — bounded session
+    event recording to SQLite. Payload sanitization (secret redaction,
+    size truncation, depth limits). Export to JSON bundles for debugging.
+    Per-session database isolation. Automatic cleanup of old trajectories.
+
+30. **External content security**: `kyourai/security/content.py` — prompt
+    injection detection (6 pattern types), external content wrapping with
+    random boundary markers, LLM special token sanitization, Unicode
+    homoglyph detection/normalization, comprehensive content analysis.
+
+31. **Multi-source secret resolution**: `kyourai/secrets/resolver.py` —
+    resolve secrets from env, file (with JSON pointer), exec (command),
+    store (custom providers), or plain text. Security validation for
+    file access (permission checks) and exec commands (dangerous pattern
+    blocking, allowlist). Caching with TTL.
+
+32. **Link understanding**: `kyourai/tools/link_understanding.py` — URL
+    extraction from text, SSRF protection (blocks private IPs, loopback,
+    metadata endpoints, non-HTTP schemes), safe URL fetching with timeout
+    and size limits, HTML text extraction.
+
+33. **Goal management**: `kyourai/tools/goals.py` — track agent goals
+    with status (active/completed/abandoned/deferred/blocked), priority
+    (low/medium/high/critical), progress (0-100%), sub-goal hierarchy,
+    tags, blockers, SQLite persistence.
+
+34. **Snapshot/backup system**: `kyourai/snapshot.py` — SQLite database
+    snapshots with SHA256 integrity verification, atomic writes with
+    staging directories, sidecar file handling (WAL/SHM/journal),
+    security hardening (private file modes), restore with verification.
+
+35. **Audit event system**: `kyourai/audit.py` — non-blocking audit trail
+    with background writer thread, execution identity context (thread-local),
+    SQLite persistence with automatic pruning, severity levels, query API
+    with filtering, statistics.
