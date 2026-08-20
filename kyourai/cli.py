@@ -652,9 +652,9 @@ def serve(host: str, port: int, model: str | None, api_key: str | None) -> None:
         f"[bold cyan]Kyourai API Server[/bold cyan]\n"
         f"Host: {host}:{port}\n"
         f"Model: {model}\n"
-        f"Dashboard: http://{host}:{port}/\n"
         f"API: /v1/chat/completions, /v1/models, /v1/sessions, /v1/insights\n"
-        f"\n[dim]Dev dashboard: cd dashboard && npm run dev[/dim]",
+        f"\n[dim]Dashboard: cd dashboard && npm run dev[/dim]\n"
+        f"[dim]  → http://localhost:3000 (proxies API to :{port})[/dim]",
         border_style="cyan",
     ))
     run_server(host=host, port=port, model=model, api_key=api_key)

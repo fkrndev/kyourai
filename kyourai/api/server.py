@@ -14,7 +14,6 @@ Endpoints:
   GET  /v1/sessions/search?q=  — full-text search session messages
   GET  /v1/insights            — usage analytics
   GET  /health                 — health check
-  GET  /                       — web dashboard (pre-built Next.js static export)
 
 Authentication: Bearer token via KYOURAI_API_KEY env var (optional).
 If not set, no auth required (for local development).
@@ -38,9 +37,7 @@ from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse, FileResponse, HTMLResponse
-from fastapi.staticfiles import StaticFiles
-from pathlib import Path
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -357,40 +354,6 @@ def create_app(
         finally:
             db.close()
         return report
-
-    # -- Dashboard (pre-built Next.js static export) -----------------------
-
-    _dashboard_dir = Path(__file__).resolve().parent.parent.parent / "dashboard" / "out"
-
-    if _dashboard_dir.is_dir():
-        # Serve Next.js static export at /
-        # Individual HTML files (index.html, 404.html) via FileResponse
-        # Assets (_next/*) via StaticFiles
-        _assets_dir = _dashboard_dir / "_next"
-        if _assets_dir.is_dir():
-            app.mount("/_next", StaticFiles(directory=str(_assets_dir)), name="next-assets")
-
-        @app.get("/", response_class=HTMLResponse)
-        async def dashboard_index():
-            index = _dashboard_dir / "index.html"
-            if index.exists():
-                return FileResponse(str(index))
-            raise HTTPException(status_code=404, detail="Dashboard not built. Run: cd dashboard && npm run build:static")
-
-        # Catch-all for client-side routing (e.g. /sessions, /chat)
-        @app.get("/{path:path}")
-        async def dashboard_catch_all(path: str):
-            # Don't intercept API routes
-            if path.startswith("v1/") or path == "health":
-                raise HTTPException(status_code=404)
-            file_path = _dashboard_dir / path
-            if file_path.is_file():
-                return FileResponse(str(file_path))
-            # Fallback to index.html for client-side routing
-            index = _dashboard_dir / "index.html"
-            if index.exists():
-                return FileResponse(str(index))
-            raise HTTPException(status_code=404, detail="Not found")
 
     return app
 

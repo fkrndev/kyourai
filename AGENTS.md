@@ -123,10 +123,9 @@ All tests use temp directories and clean up after themselves.
 
 12. **Web dashboard**: Next.js dashboard (`dashboard/`) with TypeScript +
     Tailwind. 4 tabs: Insights (cards + activity chart), Sessions (list +
-    detail), Search (FTS5), Chat (live). Pre-built static export in
-    `dashboard/out/` is served by FastAPI at `/` — no Node.js required for
-    end users. Developer workflow: `cd dashboard && npm run dev` (hot reload
-    with API proxy), `npm run build:static` to rebuild the export.
+    detail), Search (FTS5), Chat (live). Runs on its own port (3000) and
+    proxies API calls to FastAPI via next.config rewrites. Developer workflow:
+    `kyourai serve` + `cd dashboard && npm run dev`.
 
 13. **Output verification**: When `agent.verify_output` is enabled in config,
     the agent's response is scanned for verifiable claims (tests pass, build
