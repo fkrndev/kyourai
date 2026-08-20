@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from kyourai.memory.holographic import hrr
@@ -89,6 +90,95 @@ FACT_FEEDBACK_SCHEMA = {
 
 def _tool_error(message: str) -> str:
     return json.dumps({"error": message}, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
+# Heuristic auto-extraction (no LLM required)
+# ---------------------------------------------------------------------------
+
+# Patterns that signal the user wants something remembered.
+# Each pattern: (regex, category). The captured group is the fact content.
+_AUTO_EXTRACT_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    # Explicit memory requests: "remember that ...", "note that ...", "don't forget ..."
+    (
+        re.compile(
+            r"(?:please\s+)?(?:remember(?:\s+that)?|note(?:\s+that)?|don'?t\s+forget(?:\s+that)?|keep\s+in\s+mind(?:\s+that)?)\s*[,:!]?\s*(.+)",
+            re.IGNORECASE,
+        ),
+        "general",
+    ),
+    # User preferences: "I prefer ...", "I like ...", "I hate ...", "I always ..."
+    (
+        re.compile(
+            r"I\s+(?:prefer|like|love|hate|always|never|usually|tend\s+to)\s+(.+)",
+            re.IGNORECASE,
+        ),
+        "user_pref",
+    ),
+    # Identity statements: "My name is ...", "I am a ...", "I work at ..."
+    (
+        re.compile(
+            r"(?:My\s+name\s+is|I\s+am|I'?m|I\s+work\s+(?:at|for|on)|I\s+use|I\s+live\s+in)\s+(.+)",
+            re.IGNORECASE,
+        ),
+        "user_pref",
+    ),
+    # Factual declarations: "The project uses ...", "We deploy via ..."
+    (
+        re.compile(
+            r"(?:The\s+(?:project|team|codebase|app|server)\s+(?:uses|uses|runs|deploys|is)|We\s+(?:use|deploy|run|build))\s+(.+)",
+            re.IGNORECASE,
+        ),
+        "project",
+    ),
+]
+
+# Minimum fact length to avoid extracting trivial fragments
+_MIN_FACT_LEN = 10
+# Maximum facts to extract per session end (prevent flooding)
+_MAX_EXTRACT_PER_SESSION = 20
+
+
+def _extract_facts_from_messages(messages: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    """Heuristically extract (content, category) facts from conversation messages.
+
+    Scans user messages for patterns like "remember that ...", "I prefer ...",
+    and returns candidate facts. No LLM call — pure regex heuristics.
+    """
+    candidates: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role", "")
+        if role != "user":
+            continue
+        content = msg.get("content", "")
+        if not isinstance(content, str) or not content.strip():
+            continue
+
+        # Try each pattern against the full message
+        for pattern, category in _AUTO_EXTRACT_PATTERNS:
+            match = pattern.search(content)
+            if not match:
+                continue
+            fact_text = match.group(1).strip().rstrip(".")
+            # Clean up: remove trailing punctuation, collapse whitespace
+            fact_text = re.sub(r"\s+", " ", fact_text).strip()
+            if len(fact_text) < _MIN_FACT_LEN:
+                continue
+            # Deduplicate case-insensitively
+            key = fact_text.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append((fact_text, category))
+
+            if len(candidates) >= _MAX_EXTRACT_PER_SESSION:
+                return candidates
+
+    return candidates
 
 
 # ---------------------------------------------------------------------------
@@ -199,13 +289,35 @@ class HolographicMemoryProvider(MemoryProvider):
         return _tool_error(f"Unknown tool: {tool_name}")
 
     def on_session_end(self, messages: list[dict[str, Any]]) -> None:
+        """Auto-extract facts from conversation at session end.
+
+        Uses heuristic pattern matching (no LLM call) to find statements like
+        "remember that ...", "I prefer ...", "My name is ...". Only runs when
+        config auto_extract is True. Extracted facts are deduplicated against
+        existing store content (add_fact returns existing ID on duplicate).
+        """
         if not self._config.get("auto_extract", False):
             return
         if not self._store or not messages:
             return
-        # Auto-extraction would call an LLM to extract facts from the conversation.
-        # For now, this is a no-op — the Curator handles fact extraction.
-        pass
+
+        candidates = _extract_facts_from_messages(messages)
+        if not candidates:
+            return
+
+        added = 0
+        for content, category in candidates:
+            try:
+                fact_id = self._store.add_fact(content, category=category)
+                # add_fact returns existing fact_id on duplicate content — only
+                # count genuinely new facts
+                if fact_id:
+                    added += 1
+            except Exception as e:
+                logger.debug("Auto-extract add_fact failed for '%s': %s", content[:50], e)
+
+        if added:
+            logger.info("Auto-extracted %d facts at session end", added)
 
     def on_memory_write(
         self,

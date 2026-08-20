@@ -15,10 +15,12 @@ to the active user's private + shared memory spaces.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from pydantic_ai import Agent, RunContext, Tool
 
+from kyourai.config import get_config_value
 from kyourai.memory.manager import MemoryManager
 from kyourai.memory.builtin import BuiltinMemoryProvider
 from kyourai.memory.holographic.provider import HolographicMemoryProvider
@@ -90,9 +92,12 @@ class KyouraiAgent:
         self.enable_skills = enable_skills
         self.enable_cron = enable_cron
 
+        # Track last user activity for curator idle detection
+        self._last_activity_ts: float = time.time()
+
         # Build memory manager with builtin + holographic providers
         self.memory_manager = MemoryManager()
-        self._holographic_config: dict[str, Any] = {}
+        self._holographic_config: dict[str, Any] = get_config_value("memory.holographic", {}) or {}
 
         # Team memory router (if in team mode)
         self._team_router = None
@@ -165,10 +170,17 @@ class KyouraiAgent:
                 holo_provider = p
                 break
         if holo_provider and holo_provider._store:
+            curator_config = get_config_value("curator", {}) or {}
+            min_idle_hours = float(curator_config.get("min_idle_hours", 2))
+            min_idle_seconds = min_idle_hours * 3600.0
+
+            def is_idle() -> bool:
+                return (time.time() - self._last_activity_ts) >= min_idle_seconds
+
             self._curator_runner = curator_module.CuratorBackgroundRunner(
                 store=holo_provider._store,
-                config={},  # uses defaults
-                is_idle_fn=lambda: True,
+                config=curator_config,
+                is_idle_fn=is_idle,
             )
 
     def _init_skills(self, allowlist: list[str] | None) -> None:
@@ -315,6 +327,9 @@ class KyouraiAgent:
 
     async def run(self, user_prompt: str, *, message_history: list | None = None) -> str:
         """Run the agent on a user prompt. Returns the agent's output string."""
+        # Track user activity for curator idle detection
+        self._last_activity_ts = time.time()
+
         # Prefetch memory context for this query
         prefetch = self.memory_manager.prefetch_all(user_prompt)
         full_prompt = user_prompt
@@ -330,6 +345,9 @@ class KyouraiAgent:
 
     async def run_stream(self, user_prompt: str, *, message_history: list | None = None):
         """Run the agent with streaming output."""
+        # Track user activity for curator idle detection
+        self._last_activity_ts = time.time()
+
         prefetch = self.memory_manager.prefetch_all(user_prompt)
         full_prompt = user_prompt
         if prefetch:
