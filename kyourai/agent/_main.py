@@ -165,6 +165,12 @@ class KyouraiAgent:
         # Title generation flag (only auto-title on first turn)
         self._titled: bool = False
 
+        # Output verification (opt-in via config)
+        self._verify_output: bool = bool(get_config_value("agent.verify_output", False))
+
+        # Plugin manager (lazy init — only when first needed)
+        self._plugin_manager: Any = None
+
         # Curator background runner
         self._curator_runner = None
         if enable_curator:
@@ -269,18 +275,35 @@ class KyouraiAgent:
         self._cron_scheduler.start()
 
     def _build_agent(self, extra_instructions: str) -> Agent:
-        """Build the Pydantic AI agent with memory tools and system prompt."""
-        # Build system prompt from default + memory providers + skills
-        memory_prompt = self.memory_manager.build_system_prompt()
-        system_prompt = DEFAULT_SYSTEM_PROMPT
-        if memory_prompt:
-            system_prompt += "\n\n" + memory_prompt
+        """Build the Pydantic AI agent with memory tools and system prompt.
+
+        Uses the dynamic prompt builder to assemble the system prompt from:
+        base identity, memory context, tool descriptions, skills, user
+        preferences, verification config, and extra instructions.
+
+        The system prompt is built ONCE here and stays byte-stable for the
+        conversation lifetime (prompt caching invariant).
+        """
+        from kyourai.agent.prompt_builder import build_system_prompt
+
+        # Gather tool schemas for the prompt builder
+        from kyourai.tools import discover_core_tools
+        all_tool_schemas = self.memory_manager.get_all_tool_schemas() + discover_core_tools()
+
+        # Gather skills prompt
+        skills_prompt = ""
         if self.skill_loader:
-            skills_prompt = self.skill_loader.build_prompt_block()
-            if skills_prompt:
-                system_prompt += "\n\n" + skills_prompt
-        if extra_instructions:
-            system_prompt += "\n\n" + extra_instructions
+            skills_prompt = self.skill_loader.build_prompt_block() or ""
+
+        # Build the system prompt dynamically
+        system_prompt = build_system_prompt(
+            memory_prompt=self.memory_manager.build_system_prompt(),
+            skills_prompt=skills_prompt,
+            tool_schemas=all_tool_schemas,
+            config=self._config if hasattr(self, "_config") else None,
+            extra_instructions=extra_instructions,
+            verify_output=bool(get_config_value("agent.verify_output", False)),
+        )
 
         # Build tools from memory manager schemas
         tools = self._build_tools()
@@ -440,6 +463,21 @@ class KyouraiAgent:
 
         # Record successful request for rate limiting
         self._rate_limiter.record(provider)
+
+        # Output verification (if enabled)
+        if self._verify_output:
+            from kyourai.agent.verification import verify_output, format_verification_warning
+            verification = verify_output(output)
+            if verification.has_warnings:
+                output += format_verification_warning(verification)
+
+        # Run post_run plugin hooks (can modify output)
+        if self._plugin_manager:
+            hook_results = self._plugin_manager.run_hooks("post_run", output)
+            # If any hook returned a modified output, use the last one
+            for result in hook_results:
+                if isinstance(result, str) and result:
+                    output = result
 
         # Persist assistant response to session DB
         if self.session_db:
@@ -607,6 +645,23 @@ class KyouraiAgent:
             self._delegator = SubagentDelegator(self)
         return await self._delegator.delegate_batch(tasks, **kwargs)
 
+    def load_plugins(self) -> list[Any]:
+        """Discover and load plugins from ~/.kyourai/plugins/.
+
+        Returns:
+            List of PluginInfo for all discovered plugins
+        """
+        from kyourai.agent.plugin_system import PluginManager
+        if self._plugin_manager is None:
+            self._plugin_manager = PluginManager()
+        return self._plugin_manager.load_all(self)
+
+    def get_plugins(self) -> list[Any]:
+        """Get info about discovered plugins."""
+        if self._plugin_manager is None:
+            return []
+        return self._plugin_manager.get_plugin_info()
+
     def shutdown(self) -> None:
         """Shutdown all memory providers, curator, cron scheduler, and session DB."""
         if self._cron_scheduler:
@@ -620,6 +675,8 @@ class KyouraiAgent:
                 self.session_db.close()
             except Exception:
                 pass
+        if self._plugin_manager:
+            self._plugin_manager.shutdown()
         self._rate_limiter.reset()
 
     @property

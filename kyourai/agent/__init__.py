@@ -12,6 +12,9 @@ from kyourai.agent.rate_limit_tracker import RateLimitTracker
 from kyourai.agent.empty_response_guard import guard_response, is_empty_response
 from kyourai.agent.title_generator import generate_title, generate_title_sync
 from kyourai.agent.subagent import SubagentDelegator, DelegationResult
+from kyourai.agent.verification import verify_output, VerificationResult, detect_claims
+from kyourai.agent.prompt_builder import build_system_prompt
+from kyourai.agent.plugin_system import PluginManager, PluginInfo, PluginContext, HookRegistry
 
 __all__ = [
     "KyouraiAgent",
@@ -28,4 +31,12 @@ __all__ = [
     "generate_title_sync",
     "SubagentDelegator",
     "DelegationResult",
+    "verify_output",
+    "VerificationResult",
+    "detect_claims",
+    "build_system_prompt",
+    "PluginManager",
+    "PluginInfo",
+    "PluginContext",
+    "HookRegistry",
 ]

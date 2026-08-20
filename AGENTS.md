@@ -26,6 +26,7 @@ python tests/smoke_agent.py         # Pydantic AI agent core
 python tests/smoke_state.py         # SessionDB + InsightsEngine (33 checks)
 python tests/smoke_tools.py         # Core tools + context compression (42 checks)
 python tests/smoke_tier2.py         # Error handling + retry + rate limit + subagent (38 checks)
+python tests/smoke_tier25.py        # Verification + prompt builder + plugins (54 checks)
 ```
 
 All tests use temp directories and clean up after themselves.
@@ -62,6 +63,9 @@ All tests use temp directories and clean up after themselves.
 - `kyourai/agent/empty_response_guard.py` — Handle empty/whitespace LLM responses
 - `kyourai/agent/title_generator.py` — Auto-title sessions from first exchange
 - `kyourai/agent/subagent.py` — Subagent delegation (parallel task execution)
+- `kyourai/agent/verification.py` — Output verification (claim detection, file existence, evidence check)
+- `kyourai/agent/prompt_builder.py` — Dynamic system prompt builder (modular, data-driven)
+- `kyourai/agent/plugin_system.py` — Plugin manager + hook registry (third-party extensions)
 - `kyourai/cli.py` — CLI entry point (Click + Rich)
 - `kyourai/config.py` — Config loader (config.yaml)
 - `kyourai/constants.py` — Path resolution ($KYOURAI_HOME)
@@ -121,3 +125,21 @@ All tests use temp directories and clean up after themselves.
     Tabs: Insights (analytics cards + activity chart), Sessions (list + detail
     view), Search (FTS5 across session messages), Chat (live chat with agent).
     Zero dependencies — pure HTML/CSS/JS, consumes the existing API endpoints.
+
+13. **Output verification**: When `agent.verify_output` is enabled in config,
+    the agent's response is scanned for verifiable claims (tests pass, build
+    succeeds, file created/modified). Claims are checked against tool results
+    and filesystem. Warnings appended to output if claims can't be verified.
+    Policy-only — never runs code itself, just checks evidence.
+
+14. **Dynamic system prompt builder**: System prompt is assembled from modular
+    components: base identity, memory context, tool descriptions, skills,
+    user preferences (language, response style, code style), verification
+    instructions, and extra instructions. Built ONCE at init, byte-stable
+    for conversation lifetime (prompt caching invariant).
+
+15. **Plugin system**: Plugins live in ~/.kyourai/plugins/ and are discovered
+    at startup. Each plugin exports a register(ctx) function and optional
+    PLUGIN_METADATA dict. Plugins can register hooks for agent events
+    (pre_run, post_run, pre_tool, post_tool, session_start/end, memory_sync).
+    Same trust model as pip install — only install plugins you trust.
