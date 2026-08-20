@@ -56,6 +56,7 @@ All tests use temp directories and clean up after themselves.
 - `kyourai/state/insights.py` — InsightsEngine (usage analytics over sessions)
 - `kyourai/api/server.py` — OpenAI-compatible API server + web dashboard (/v1/chat/completions, /v1/sessions, /v1/insights, /dashboard)
 - `kyourai/api/dashboard.html` — Single-page web dashboard (insights, sessions, search, chat)
+- `dashboard/` — Next.js dashboard (TypeScript + Tailwind, 4 tabs, API proxy to FastAPI)
 - `kyourai/agent/_main.py` — KyouraiAgent (Pydantic AI + memory + skills + cron + session + tools + compression + retry + rate limit)
 - `kyourai/agent/error_classifier.py` — Error classification (retryable vs fatal)
 - `kyourai/agent/retry_utils.py` — Retry with exponential backoff + jitter
@@ -121,10 +122,13 @@ All tests use temp directories and clean up after themselves.
     subagent instances, each with its own session. Supports batch delegation
     for parallel task execution. Results collected as DelegationResult.
 
-12. **Web dashboard**: Single-page HTML dashboard served at / and /dashboard.
-    Tabs: Insights (analytics cards + activity chart), Sessions (list + detail
-    view), Search (FTS5 across session messages), Chat (live chat with agent).
-    Zero dependencies — pure HTML/CSS/JS, consumes the existing API endpoints.
+12. **Web dashboard**: Two dashboard options:
+    - **Basic** (`api/dashboard.html`): Single-page vanilla HTML/CSS/JS, served
+      at / and /dashboard by FastAPI. Zero dependencies.
+    - **Next.js** (`dashboard/`): Full React dashboard with TypeScript + Tailwind.
+      4 tabs: Insights (cards + activity chart), Sessions (list + detail),
+      Search (FTS5), Chat (live). Proxies API calls to FastAPI via next.config
+      rewrites. Run with `cd dashboard && npm run dev`.
 
 13. **Output verification**: When `agent.verify_output` is enabled in config,
     the agent's response is scanned for verifiable claims (tests pass, build

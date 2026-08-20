@@ -41,3 +41,8 @@ Thumbs.db
 *.db-shm
 .curator_state
 cron_state.json
+
+# Next.js dashboard
+dashboard/node_modules/
+dashboard/.next/
+dashboard/out/
