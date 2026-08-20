@@ -24,6 +24,7 @@ python tests/smoke_portable_context.py  # KPC export/import
 python tests/smoke_manager.py       # MemoryManager orchestrator
 python tests/smoke_agent.py         # Pydantic AI agent core
 python tests/smoke_state.py         # SessionDB + InsightsEngine (33 checks)
+python tests/smoke_tools.py         # Core tools + context compression (42 checks)
 ```
 
 All tests use temp directories and clean up after themselves.
@@ -44,10 +45,15 @@ All tests use temp directories and clean up after themselves.
 - `kyourai/skills/loader.py` — Skills system (SKILL.md loader, gating, allowlists)
 - `kyourai/skills/bundled/` — Bundled skills (memory-curator, portable-context)
 - `kyourai/cron/__init__.py` — Cron scheduler (persistent scheduled tasks)
+- `kyourai/tools/registry.py` — Tool auto-discovery and registration
+- `kyourai/tools/terminal.py` — Shell command execution (safety checks, timeout, truncation)
+- `kyourai/tools/read_file.py` — File reading (path validation, binary detection, size limit)
+- `kyourai/tools/web_search.py` — DuckDuckGo web search (no API key required)
+- `kyourai/context/compressor.py` — Context compression (token estimation, summary generation)
 - `kyourai/state/db.py` — SessionDB (SQLite + FTS5 session/message store)
 - `kyourai/state/insights.py` — InsightsEngine (usage analytics over sessions)
 - `kyourai/api/server.py` — OpenAI-compatible API server (/v1/chat/completions, /v1/sessions, /v1/insights)
-- `kyourai/agent.py` — KyouraiAgent (Pydantic AI + memory + skills + cron + session persistence)
+- `kyourai/agent.py` — KyouraiAgent (Pydantic AI + memory + skills + cron + session + tools + compression)
 - `kyourai/cli.py` — CLI entry point (Click + Rich)
 - `kyourai/config.py` — Config loader (config.yaml)
 - `kyourai/constants.py` — Path resolution ($KYOURAI_HOME)
@@ -76,3 +82,19 @@ All tests use temp directories and clean up after themselves.
    turn. Enables session history browsing, full-text search across past
    conversations, and usage analytics via InsightsEngine. Schema is versioned
    for forward migration. Shared connection registry prevents write contention.
+
+7. **Core tools**: terminal (shell exec with safety blocklist + timeout),
+   read_file (path validation + binary detection), web_search (DuckDuckGo,
+   no API key). Auto-discovered via tools/registry.py. Only fundamental,
+   broadly useful tools belong here — niche capability should be a skill.
+
+8. **Context compression**: When message history exceeds 80% of the model's
+   context window, older messages are summarized into a single system message
+   while keeping the N most recent verbatim. System prompt is never touched —
+   only message_history is compressed, preserving prompt cache.
+
+9. **Prompt caching**: System prompt is built once in __init__ and stays
+   byte-stable for the conversation lifetime. Memory prefetch is NOT appended
+   to the user prompt (that would mutate the prefix and invalidate cache).
+   Memory context lives in the frozen system prompt (builtin snapshot) or is
+   retrieved via tools (fact_store) during the conversation.

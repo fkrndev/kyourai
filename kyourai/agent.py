@@ -55,6 +55,11 @@ You have access to a sophisticated memory system with two layers:
    them. Mark 'helpful' if accurate, 'unhelpful' if outdated. This trains
    the memory — good facts rise, bad facts sink.
 
+You also have core tools for interacting with the machine:
+- **terminal**: Execute shell commands (git, python, npm, etc.)
+- **read_file**: Read file contents (source code, configs, docs)
+- **web_search**: Search the web for current information
+
 IMPORTANT: Before answering questions about the user or projects, ALWAYS
 probe or reason first to recall relevant facts from holographic memory.
 """
@@ -101,10 +106,12 @@ class KyouraiAgent:
         try:
             self.session_db = SessionDB()
             source = "team" if team_id else "cli"
+            # Model may be a non-string (TestModel, etc.) — coerce to str
+            model_str = model if isinstance(model, str) else str(model)
             self.session_db.create_session(
                 session_id,
                 source=source,
-                model=model,
+                model=model_str,
                 team_id=team_id or "",
                 user_id=user_id or "",
             )
@@ -130,8 +137,18 @@ class KyouraiAgent:
         if enable_skills:
             self._init_skills(skills_allowlist)
 
-        # Build the Pydantic AI agent
+        # Build the Pydantic AI agent (system prompt is frozen here —
+        # byte-stable for the conversation lifetime for prompt caching)
         self._agent = self._build_agent(extra_instructions)
+        # Pydantic AI stores system prompts as a list (dynamic + static)
+        self._system_prompt: str = self._agent._system_prompts[0] if self._agent._system_prompts else ""
+
+        # Context compression config
+        self._model_context_limit: int = int(
+            get_config_value("agent.context_limit", 128_000)
+        )
+        from kyourai.context import estimate_tokens
+        self._system_prompt_tokens: int = estimate_tokens(self._system_prompt)
 
         # Curator background runner
         self._curator_runner = None
@@ -264,33 +281,39 @@ class KyouraiAgent:
         return agent
 
     def _build_tools(self) -> list[Tool]:
-        """Convert memory manager tool schemas into Pydantic AI Tool objects."""
+        """Convert memory + core tool schemas into Pydantic AI Tool objects."""
+        # Memory tools (memory, fact_store, fact_feedback)
         schemas = self.memory_manager.get_all_tool_schemas()
         tools = []
         for schema in schemas:
-            tool = self._schema_to_tool(schema)
+            tool = self._schema_to_tool(schema, source="memory")
             if tool:
                 tools.append(tool)
+
+        # Core tools (terminal, read_file, web_search)
+        from kyourai.tools import discover_core_tools
+        core_schemas = discover_core_tools()
+        for schema in core_schemas:
+            tool = self._schema_to_tool(schema, source="core")
+            if tool:
+                tools.append(tool)
+
         return tools
 
-    def _schema_to_tool(self, schema: dict[str, Any]) -> Tool | None:
+    def _schema_to_tool(self, schema: dict[str, Any], *, source: str = "memory") -> Tool | None:
         """Convert a JSON schema dict into a Pydantic AI Tool.
 
-        Since the memory tools use dynamic JSON schemas (not Pydantic models),
-        we create wrapper functions that accept a dict and dispatch to the
-        memory manager.
+        Args:
+            schema: Tool JSON schema with 'name', 'description', 'parameters'
+            source: "memory" for memory manager tools, "core" for core tools
         """
         tool_name = schema["name"]
         tool_desc = schema.get("description", "")
         params_schema = schema.get("parameters", {})
 
-        # Build a Pydantic model dynamically from the parameters schema
-        # For simplicity, we use a dict-based approach with Pydantic AI's
-        # Tool function registration
         from pydantic import BaseModel, create_model
         from typing import Optional
 
-        # Create a Pydantic model from the JSON schema properties
         properties = params_schema.get("properties", {})
         required = set(params_schema.get("required", []))
 
@@ -327,13 +350,32 @@ class KyouraiAgent:
             logger.warning("Failed to create model for tool %s: %s", tool_name, e)
             return None
 
-        def make_handler(name: str):
-            def handler(ctx: RunContext["KyouraiAgent"], **kwargs) -> str:
-                args = {k: v for k, v in kwargs.items() if v is not None}
-                return ctx.deps.memory_manager.handle_tool_call(name, args)
-            return handler
+        if source == "core":
+            # Core tools dispatch to their own handler (no memory manager)
+            from kyourai.tools import get_tool_handler
 
-        handler = make_handler(tool_name)
+            core_handler = get_tool_handler(tool_name)
+            if core_handler is None:
+                logger.warning("No handler found for core tool %s", tool_name)
+                return None
+
+            def make_core_handler(name: str, fn):
+                def handler(ctx: RunContext["KyouraiAgent"], **kwargs) -> str:
+                    args = {k: v for k, v in kwargs.items() if v is not None}
+                    return fn(**args)
+                return handler
+
+            handler = make_core_handler(tool_name, core_handler)
+        else:
+            # Memory tools dispatch to memory manager
+            def make_handler(name: str):
+                def handler(ctx: RunContext["KyouraiAgent"], **kwargs) -> str:
+                    args = {k: v for k, v in kwargs.items() if v is not None}
+                    return ctx.deps.memory_manager.handle_tool_call(name, args)
+                return handler
+
+            handler = make_handler(tool_name)
+
         handler.__name__ = tool_name
         handler.__doc__ = tool_desc
 
@@ -342,7 +384,17 @@ class KyouraiAgent:
     # -- Public API ----------------------------------------------------------
 
     async def run(self, user_prompt: str, *, message_history: list | None = None) -> str:
-        """Run the agent on a user prompt. Returns the agent's output string."""
+        """Run the agent on a user prompt. Returns the agent's output string.
+
+        Prompt caching: the system prompt is byte-stable for the conversation
+        lifetime (built once in __init__). Memory prefetch is NOT appended to
+        the user prompt — that would mutate the prefix and invalidate cache.
+        Instead, memory context is in the frozen system prompt (builtin
+        snapshot) or retrieved via tools (fact_store).
+
+        Context compression: if message_history is provided and exceeds the
+        token threshold, older messages are summarized before the API call.
+        """
         # Track user activity for curator idle detection
         self._last_activity_ts = time.time()
 
@@ -353,17 +405,22 @@ class KyouraiAgent:
             except Exception:
                 pass
 
-        # Prefetch memory context for this query
-        prefetch = self.memory_manager.prefetch_all(user_prompt)
-        full_prompt = user_prompt
-        if prefetch:
-            full_prompt = f"{prefetch}\n\n{user_prompt}"
+        # Compress message history if needed (preserves cache — only touches
+        # message_history, never the system prompt)
+        if message_history:
+            from kyourai.context import compress_if_needed
+            message_history = await compress_if_needed(
+                message_history,
+                model=self.model,
+                model_context=self._model_context_limit,
+                system_prompt_tokens=self._system_prompt_tokens,
+            )
 
         # Maybe run curator in background
         if self._curator_runner:
             self._curator_runner.maybe_run()
 
-        result = await self._agent.run(full_prompt, deps=self, message_history=message_history)
+        result = await self._agent.run(user_prompt, deps=self, message_history=message_history)
 
         # Persist assistant response to session DB
         if self.session_db:
@@ -377,7 +434,10 @@ class KyouraiAgent:
         return result.output
 
     async def run_stream(self, user_prompt: str, *, message_history: list | None = None):
-        """Run the agent with streaming output."""
+        """Run the agent with streaming output.
+
+        Same caching + compression guarantees as run().
+        """
         # Track user activity for curator idle detection
         self._last_activity_ts = time.time()
 
@@ -388,16 +448,21 @@ class KyouraiAgent:
             except Exception:
                 pass
 
-        prefetch = self.memory_manager.prefetch_all(user_prompt)
-        full_prompt = user_prompt
-        if prefetch:
-            full_prompt = f"{prefetch}\n\n{user_prompt}"
+        # Compress message history if needed
+        if message_history:
+            from kyourai.context import compress_if_needed
+            message_history = await compress_if_needed(
+                message_history,
+                model=self.model,
+                model_context=self._model_context_limit,
+                system_prompt_tokens=self._system_prompt_tokens,
+            )
 
         if self._curator_runner:
             self._curator_runner.maybe_run()
 
         collected = []
-        async with self._agent.run_stream(full_prompt, deps=self, message_history=message_history) as result:
+        async with self._agent.run_stream(user_prompt, deps=self, message_history=message_history) as result:
             async for chunk in result.stream_text(delta=True):
                 collected.append(chunk)
                 yield chunk
